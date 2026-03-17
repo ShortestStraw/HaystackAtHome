@@ -1,0 +1,73 @@
+Whole project build around one paper:
+    http://www.usenix.org/event/osdi10/tech/full_papers/Beaver.pdf
+
+Project structure and purposes:
+Our goal is to provide simple storage service for small files,
+    that will keep requirements low, yet it should be capable of handling thousands request per second.
+Project based on object storage model, providing simple CRUD api called kv
+Project have 2 main parts:
+    Api server
+    Storage server
+
+Api server is capable of authentication and authorization, load balancing, 
+    parsing and converting user requests to grpc call to storage services.
+
+Storage server is capable of storing data on disk in single file (called haystack)
+
+Client:
+    As we are implementing our own api, we have to provide description for it.
+    And client application that can be used to perform CRUD operations with objects
+
+Api Server details:
+    authentication:
+        authentication based on SignatureV2 in aws s3 protocol. It means that every incoming
+        request should be signed, using algorithm HMAC-SHA256 and secret key
+        As we don't plan to implement different users in MVP secret key can be placed in config
+        Before signing request should be transformed into canonical from:
+        "<Method>\n" +
+        "<URI>\n" +
+        "<CanonicalHeaders>\n"
+        Canonical headers may be different for put/get/delete request:
+        get/delete:
+        "x-date:<data in  ISO 8601 format>\n" +
+        "AccessKey:<key>\n"
+        put:
+        "x-date:<data in  ISO 8601 format>\n" +
+        "AccessKey:<key>\n" +
+        "Content-Type:<content-type>\n" +
+        "Etag:<md5 checksum of payload>"
+        AccessKey may be used in future, if we will implement different users
+    authorization:
+        do not presented in mvp, may be added in future. AccessKey header may be used for implementing it
+    load balancing:
+        Load balancing is based on consistent hashing. After reading configuration,
+            that describes all storage servers, api server should create hashing ring,
+            defining points on the ring by hashing names of the servers.
+        Thus, configuration of storage server should be the same on each api node
+    API:
+        api is based on aws s3 api with PUT/GET/DELETE object.
+        server should handle all uri's, interpreting them as keys for objects
+        Request handling should look like this:
+            1. Build task name from request (for mvp it the same as method of request)
+            2. Lookup task handler in map, if not found send response NotImplemented
+            3. Sign request and compare signatures - authentication
+            4. Define storage server - load balancing
+            5. handle task
+        Task structure should have fields that will be handy during handling:
+            Client to storage server
+            Object key
+            Object Data (for PUT task)
+            /* may be something else (task result, i guess) */
+    api server configuration:
+        it should contain configuration of storage servers, so we can build hash ring. (path to config)
+        endpoint
+        isSecure flag (use ssl encryption or not)
+        path to ssl certificates
+        log level
+Storage Server details:
+    storage server should follow it's description in http://www.usenix.org/event/osdi10/tech/full_papers/Beaver.pdf
+    mainly it have to implement grpc server, that will handle requests:
+        Put object,
+        Get object (lookup object),
+        Delete object
+    storage format is described in the paper

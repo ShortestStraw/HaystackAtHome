@@ -1,0 +1,5 @@
+Server should describe simple http service structure, that will be able to:
+1. Accept requests and automatically define task based on URL
+
+As haystack storage server initializes, it should create volume and gen uid,
+    that will be used for consistent hashing

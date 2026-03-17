@@ -1,0 +1,17 @@
+API:
+1. Implement simple api, that will accept Put/Get requests for small objects
+    (less or equal to 4Gb), use SignatureV2 as example:
+
+Canonical request
+```
+<HTTPMethod>\n // <------ Put Get Head
+<CanonicalURI>\n // <------ Path to an object
+<CanonicalHeaders>\n // <-------- x-date, Content-Type, AccessKey, Etag
+```
+Add to canonical request secret key (in first version it can be volume Id)
+Use HMAC-sha256 - that is a signature, that will be put into Authorization header
+
+Plans to expand functionality:
+1. Implement users and user service that will manage users and their access to data
+2. Split user service and management part, I guess that best practice is to 
+    manage user access policies in different service

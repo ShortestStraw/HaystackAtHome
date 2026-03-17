@@ -1,0 +1,16 @@
+syntax = "proto3";
+package haystack;
+option go_package = "./pb";
+
+import "google/protobuf/empty.proto";
+
+/* Haystack storage server description */
+service HaystackStorage {
+       rpc GetUid(google.protobuf.Empty) returns (Uid) {}
+}
+
+/* Messages */
+
+message Uid {
+        uint64 uid = 1;
+}
