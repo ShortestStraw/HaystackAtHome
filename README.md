@@ -1,6 +1,6 @@
-# PhotoStack
+# HaystackAtHome
 
-**PhotoStack** is a high-performance, cost-efficient distributed object storage system written in Go. Inspired by Facebook’s **Haystack** architecture, it is specifically optimized for storing and serving massive volumes of photos.
+**HaystackAtHome** is a high-performance, cost-efficient distributed object storage system written in Go. Inspired by Facebook’s **Haystack** architecture, it is specifically optimized for storing and serving massive volumes of photos.
 
 The system is designed for environments where data redundancy and fault tolerance are handled at the hardware or infrastructure level, allowing the software layer to focus entirely on **throughput, low latency, and extreme scalability.**
 
@@ -17,7 +17,7 @@ The system is designed for environments where data redundancy and fault toleranc
 
 ## 🏗️ Architecture
 
-PhotoStack consists of two primary services: the **API Gateway (GW)** and the **Storage Service (SS)**. Every storage node runs a single GW instance and one SS instance per physical disk.
+HaystackAtHome consists of two primary services: the **API Gateway (GW)** and the **Storage Service (SS)**. Every storage node runs a single GW instance and one SS instance per physical disk.
 
 
 ### 1. Storage Service (SS)
@@ -39,7 +39,7 @@ The GW acts as the intelligent entry point for all client requests.
 
 ## 📊 Workload Assumptions
 
-PhotoStack is tuned for a specific, photo-heavy traffic pattern:
+HaystackAtHome is tuned for a specific, photo-heavy traffic pattern:
 * **Read-Heavy:** 5–10x more reads than uploads.
 * **Write-Once:** Objects are never modified; they are only uploaded or deleted.
 * **Deletion Rate:** Low (approximately 0.2 deletions for every upload).
