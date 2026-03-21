@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"haystack/api"
+	"HaystackAtHome/internal/api"
 	"log/slog"
 	"net/http"
 	"os"

@@ -3,7 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
-	"haystack/api"
+	"HaystackAtHome/internal/api"
 	"log"
 	"log/slog"
 	"net/http"

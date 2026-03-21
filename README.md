@@ -71,10 +71,10 @@ make build
 ### Running a Storage Node
 To start a Storage Service for a specific disk:
 ```bash
-./ss -config config-ss.yaml
+./ss -config config.toml -name <ss-name>
 ```
 
 To start the API Gateway:
 ```bash
-./gw -config config-gw.yaml
+./gw -config config.toml -name <gw-name>
 ```
