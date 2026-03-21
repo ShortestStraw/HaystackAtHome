@@ -3,8 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
-	"haystack/config"
-	"haystack/server"
+	"HaystackAtHome/internal/config"
+	"HaystackAtHome/internal/server"
 	"log/slog"
 	"os"
 )
@@ -19,9 +19,8 @@ const (
 var (
 	name       = flag.String("name", "", "Name of the server to search in config")
 	isSecure   = flag.Bool("secure", false, "Connection uses TLS if true, else plain TCP")
-	configFile = flag.String("config", "./config.toml", "Path to config file, default "+
-		"is processes current directory")
-	logLevel = flag.Int("log-level", 2, "")
+	configFile = flag.String("config", "./config.toml", "Path to config file, default ./config.toml")
+	logLevel   = flag.Int("log-level", 2, "")
 )
 
 func main() {
