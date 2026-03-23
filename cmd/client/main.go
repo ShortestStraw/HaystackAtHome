@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"HaystackAtHome/internal/api"
+	"HaystackAtHome/internal/build_version"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,7 +30,7 @@ func main() {
 	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	slog.SetDefault(logger)
-	slog.Info("Service started")
+	slog.Info("Service started", "version", build_version.Get())
 	// 3. Customize the request (optional)
 	req.Header.Add("x-date", "some-date")
 	req.Header.Add("AccessKey", "admin")
