@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"HaystackAtHome/internal/config"
 	"HaystackAtHome/internal/server"
+	"HaystackAtHome/internal/build_version"
 	"log/slog"
 	"os"
 )
@@ -42,7 +43,7 @@ func main() {
 	opts := &slog.HandlerOptions{Level: ll}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, opts))
 	slog.SetDefault(logger)
-	slog.Info("Service started")
+	slog.Info("Service started", "version", build_version.Get())
 	cfg := config.New(*configFile)
 	ring := config.NewMd5Ring(cfg)
 	slog.Debug("Starting", "Config", cfg.String())

@@ -1,0 +1,3 @@
+/bin
+/internal/transport/gw-ss*
+!/internal/transport/gw-ss.proto
