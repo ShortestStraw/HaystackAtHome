@@ -1,7 +1,3 @@
-VERSION_FILE := Vers.ion
-VERSION ?= $(shell cat $(VERSION_FILE))
-BIN_DIR ?= $(abspath bin)
-
 .PHONY = build clean
 
 clean: 
