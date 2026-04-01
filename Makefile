@@ -1,8 +1,11 @@
 VERSION_FILE := Vers.ion
 VERSION ?= $(shell cat $(VERSION_FILE))
-BIN_DIR ?= $(abspath bin)
+VERSION_VAR ?= HaystackAtHome/internal/build_info.version
 
-.PHONY: version-bump-patch version-bump-minor version-bump-major build clean
+BIN_DIR ?= $(abspath bin)
+PROGS := gw ss client
+
+.PHONY: version-bump-patch version-bump-minor version-bump-major build clean build-grpc
 
 # Helper to ensure the version file exists before bumping
 init-version:
@@ -34,29 +37,14 @@ bin_dir: $(BIN_DIR)
 
 PHASE=0
 
-build: bin_dir clean 
-	@echo "--------------------------------------------------"
-	@echo "[PHASE $(PHASE)] Building client"; $(eval PHASE = $(shell echo $$(($(PHASE) + 1))))
-	$(MAKE) -C cmd/client build VERSION=$(VERSION) BIN_DIR=$(BIN_DIR)
+build-grpc:
+	$(MAKE) -C internal/transport build
 
-	@echo "--------------------------------------------------"
-	@echo "[PHASE $(PHASE)] Building grpc transport"; $(eval PHASE = $(shell echo $$(($(PHASE) + 1))))
-	$(MAKE) -C internal/transport build BIN_DIR=$(BIN_DIR)
-
-	@echo "--------------------------------------------------"
-	@echo "[PHASE $(PHASE)] Building GW"; $(eval PHASE = $(shell echo $$(($(PHASE) + 1))))
-	$(MAKE) -C cmd/gw build VERSION=$(VERSION) BIN_DIR=$(BIN_DIR)
-
-	@echo "--------------------------------------------------"
-	@echo "[PHASE $(PHASE)] Building SS"; $(eval PHASE = $(shell echo $$(($(PHASE) + 1))))
-	$(MAKE) -C cmd/ss build VERSION=$(VERSION) BIN_DIR=$(BIN_DIR)
+build: clean bin_dir build-grpc
+	for prog in $(PROGS); do \
+		go build -ldflags="-X '$(VERSION_VAR)=$(VERSION)'" -o $(BIN_DIR)/$$prog cmd/$$prog/main.go; \
+	done
 
 clean:
-	@echo "--------------------------------------------------"
-	@echo "[PHASE $(PHASE)] Building SS"; $(eval PHASE = $(shell echo $$(($(PHASE) + 1))))
-
-	$(MAKE) -C cmd/client clean
 	$(MAKE) -C internal/transport clean
-	$(MAKE) -C cmd/gw clean
-	$(MAKE) -C cmd/ss clean
 	rm -rf $(BIN_DIR)/*
