@@ -17,21 +17,45 @@ type WriteAtCloser interface {
 	io.Closer
 }
 
+type VolumeSpaceUsage struct {
+	Free             uint64  // space that can be written by new objects
+	Used             uint64  // space used by all objects
+	Garbage          uint64  // space used by deleted objects
+}
+
+type Volume struct {
+	Path             string  // relative to SS work dir
+	Space            VolumeSpaceUsage
+}
+
 type VolumeStat struct {
-	MaxSize          uint64 // in bytes
-	Free             uint64 // in bytes
+	Space            VolumeSpaceUsage
 	PendingReads     int
 	RunningReads     int
 	PendingWrites    int
 	PendingKiB       int // pending writes total size
 }
+
+type ObjFlags struct {
+	Deleted          bool
+	// Others will be added as needed
+}
+
+type ObjInfo struct {
+	Key              uint64
+	Flags            ObjFlags
+	MetaSize         uint64
+	DataSize         uint64
+	Offset           uint64
+}
+
 type StorageStats struct {
 	PendingWrites    int
 	PendingReads     int
 	PendingDeletes   int
 	RunningReads     int
 	Volumes          []VolumeStat
-	WriteBufferSzs   int // volumes have own
+	WriteBufferSzs   int
 }
 
 type StorageMetrics struct {
@@ -42,7 +66,9 @@ type StorageMetrics struct {
 	WriteErrors      *prom.CounterVec // labels: {<error>}
 
 	Latencies        *prom.HistogramVec // labels: {<volumeKey>, [read|write|delete]}
-	Sizes            *prom.CounterVec // labels: {<loumeKey>}
+	Sizes            *prom.GaugeVec // labels: {<volumeKey>}
+
+	Compaction       *prom.GaugeVec // 0-1 state; labels: {<volumeKey>, [from|to]}
 }
 /*
 Storage provides abstraction to work with storage as a set of opened volumes.
@@ -70,6 +96,12 @@ type Storage interface {
 
 	// Deletes the whole volume and releasing memory it used
 	RemoveVolume(ctx context.Context, volKey uint64) error
+
+	// return currently used volumes list, see Volume
+	ListVolumes(ctx context.Context) ([]Volume, error)
+
+	// return objects meta info for specified volume, see ObjMeta
+	ListObjects(ctx context.Context, volKey uint64) ([]ObjInfo, error)
 
 	// Moves volume needles from @fromKey volume to @toKey volume, skipping deleted needles.
 	//
@@ -112,5 +144,5 @@ type Storage interface {
 
 	// Close all volumes, flushing all buffers and free inmem state
 	// all references provided by interface must not be used after Close.
-	Close() error
+	Close(ctx context.Context) error
 }
