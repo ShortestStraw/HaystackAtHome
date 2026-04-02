@@ -4,6 +4,7 @@ go 1.24.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/google/go-cmp v0.7.0
 	github.com/lunixbochs/struc v0.0.0-20241101090106-8d528fa2c543
 	golang.org/x/sys v0.39.0
 	google.golang.org/grpc v1.79.3
