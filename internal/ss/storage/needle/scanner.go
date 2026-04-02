@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 
+	"HaystackAtHome/internal/ss/models"
+
 	"github.com/lunixbochs/struc"
 )
 
@@ -152,10 +154,7 @@ func NewIter(ctx context.Context, vol_fd io.ReaderAt, options... WithOption) (it
 	if it.cs == nil {
 		// in case of disabled cs and ra we dont need to read full volume, just headers and footers
 		// TODO implement
-		return nil, &ErrValidation{
-			off: 0,
-			msg: "iterator with disabled checksum is not imlemented yet",
-		}
+		return nil, &models.ErrUnimplemented{}
 	}
 
 	if it.ra.buf != nil {
@@ -431,8 +430,9 @@ On last call return nil, io.EOF.
 Other errors are same as for NewIter.
 */
 func (it *Iter) Next(ctx context.Context) (nh *Header, err error) {
-	eTarget := &ErrValidation{}
-	if err = it.getNeedle(ctx); err != nil && !errors.As(err, &eTarget) {
+	eTarget1 := &models.ErrObjValidation{}
+	eTarget2 := &models.ErrObjCSMismatch{}
+	if err = it.getNeedle(ctx); err != nil && !errors.As(err, &eTarget1) && !errors.As(err, &eTarget2){
 		return nil, err
 	} else {
 		nh = &Header{

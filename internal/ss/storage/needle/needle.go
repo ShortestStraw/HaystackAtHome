@@ -14,7 +14,7 @@ package needle
 import (
 	"encoding/binary"
 	"io"
-	"strconv"
+	"HaystackAtHome/internal/ss/models"
 )
 
 const (
@@ -32,22 +32,6 @@ const (
 
 	DataShift = headerOndiskSize // Shift of object data offset relatively to its header offset
 )
-
-type ErrValidation struct {
-	off   uint64 // The offset where validation failed
-	msg   string
-}
-
-func (e *ErrValidation) Error() string {
-	if e.off != 0 {
-		e.msg = e.msg + ". Offset: " + strconv.FormatUint(e.off, 10)
-	}
-	return e.msg
-}
-
-func (e *ErrValidation) Offset() uint64 {
-	return e.off
-}
 
 // Respresent needle ondisk header. see NeedleHeader type
 type headerOndisk struct {
@@ -138,26 +122,17 @@ func (decoder *footerOndiskDecoder) Unpack(r io.Reader) error {
 
 func validateHeader(header *headerOndisk, off uint64) error {
 	if header.Magic != headerMagic {
-		return &ErrValidation{
-			off: off,
-			msg: "Invalid needle header magic",
-		}
+		return models.NewErrObjValidation("Header magic mismatch", off)
 	}
 	return nil
 }
 
 func validateFooter(footer *footerOndisk, off uint64, csum uint64) error {
 	if footer.Magic != footerMagic {
-		return &ErrValidation{
-			off: off,
-			msg: "Invalid needle footer magic",
-		}
+		return models.NewErrObjValidation("Footer magic mismatch", off)
 	}
 	if footer.Checksum != csum {
-		return &ErrValidation{
-			off: off,
-			msg: "Checksum mismatch",
-		}
+		return models.NewErrObjCSMismatch("Checksum mismatch")
 	}
 	return nil
 }

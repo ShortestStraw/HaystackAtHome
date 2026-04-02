@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"HaystackAtHome/internal/ss/models"
+
 	"github.com/lunixbochs/struc"
 
 	"golang.org/x/sys/unix"
@@ -110,8 +112,10 @@ func testSimpleScanerCase(t *testing.T, ctx context.Context, logger *slog.Logger
 		n++
 	}
 
-	target := &ErrValidation{}
-	if !(errors.As(err, &target) || err == io.EOF) {
+	target1 := &models.ErrObjValidation{}
+	target2 := &models.ErrObjCSMismatch{}
+
+	if !errors.As(err, &target1) && !errors.As(err, &target2) && err != io.EOF {
 		t.Errorf("last err = '%s', want '&ErrValidation{}' or 'io.EOF", err.Error())
 	}
 }
@@ -235,9 +239,10 @@ func testScanerOffsetsCase(
 		nh, err = it.Next(ctx)
 	}
 
-	target := &ErrValidation{}
+	target1 := &models.ErrObjValidation{}
+	target2 := &models.ErrObjCSMismatch{}
 
-	if !errors.As(err, &target) && err != io.EOF {
+	if !errors.As(err, &target1) && !errors.As(err, &target2) && err != io.EOF {
 		t.Errorf("last err = '%s', want '&ErrValidation{}'", err.Error())
 	}
 
@@ -598,11 +603,11 @@ func benchmarkScaner(b *testing.B, inmem []byte, ondisk *file_, bufSz uint64, ra
 		b.StartTimer()
 		var nh *Header
 		nh, err = it.Next(b.Context())
-		target := &ErrValidation{}
+		target := &models.ErrObjValidation{}
 		for ; err == nil || errors.As(err, &target); nh, err = it.Next(b.Context()) {
 			_ = nh
 			countNext++
-			target = &ErrValidation{}
+			target = &models.ErrObjValidation{}
 		}
 		countNext++
 
