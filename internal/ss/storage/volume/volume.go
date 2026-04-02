@@ -25,15 +25,15 @@ func (e *HeaderValidationError) Error() string {
 const (
 	version1 = 1
 
-	headerMagic uint64 = 0xE59340401F5EE90B
+	headerMagic uint64 = 0xFEDCBA401F5EE90B
 	currentVersion = version1
 
-	volumeHeaderOndiskSize int = 40 // in bytes
+	headerOndiskSize int = 40 // in bytes
 	maxPendingReads = 128
 )
 
 // Storage service volume.$i ondisk header. Big endian. Must be @volumeHeaderOndiskSize bytes long in raw format
-type volumeHeaderOndisk struct {
+type headerOndisk struct {
 	Magic     uint64     `struc:"uint64,big"`
 	Id        uint64     `struc:"uint64,big"`
 	MaxSize   uint64     `struc:"uint64,big"`
@@ -41,7 +41,7 @@ type volumeHeaderOndisk struct {
 	Reserved  [3]uint32  `struc:"[3]uint32,big"`
 }
 
-func validateVolumeHeader(header *volumeHeaderOndisk) error {
+func validateHeader(header *headerOndisk) error {
 	hdrOndiskSzActual, err := struc.Sizeof(header)
 	if err != nil {
 		return &HeaderValidationError{ 
@@ -49,9 +49,9 @@ func validateVolumeHeader(header *volumeHeaderOndisk) error {
 		}
 	}
 
-	if hdrOndiskSzActual != volumeHeaderOndiskSize {
+	if hdrOndiskSzActual != headerOndiskSize {
 		return &HeaderValidationError{ 
-			msg: fmt.Sprintf("header proto size mismatched: expected '%d', got '%d'", volumeHeaderOndiskSize, hdrOndiskSzActual),
+			msg: fmt.Sprintf("header proto size mismatched: expected '%d', got '%d'", headerOndiskSize, hdrOndiskSzActual),
 		}
 	}
 
@@ -71,14 +71,14 @@ func validateVolumeHeader(header *volumeHeaderOndisk) error {
 }
 
 // Storage service volume.$i header in memory representation
-type VolumeHeader struct {
+type Header struct {
 	Id        uint64
 	MaxSize   uint64
 	Version   uint32
 }
 
-func volumeHeaderFrom(headerOndisk *volumeHeaderOndisk) (header VolumeHeader) {
-	return VolumeHeader{
+func headerFrom(headerOndisk *headerOndisk) (header Header) {
+	return Header{
 		Id:        headerOndisk.Id,
 		MaxSize:   headerOndisk.MaxSize,
 		Version:   headerOndisk.Version,
@@ -91,7 +91,7 @@ func volumeHeaderFrom(headerOndisk *volumeHeaderOndisk) (header VolumeHeader) {
 // Volume cannot be descruct if any of VolumeDescriptor is in use.
 // Thread safe. 
 type Volume struct {
-	header       VolumeHeader  // immutable after init
+	header       Header  // immutable after init
 
 	io           *os.File  // actual fd
 	
@@ -124,18 +124,18 @@ func Open(path string, logger *slog.Logger) (*Volume, error) {
 		refcnt: &sync.WaitGroup{},
 	}
 
-	headerOndisk := &volumeHeaderOndisk{}
+	headerOndisk := &headerOndisk{}
 	if err = struc.Unpack(vol.io, headerOndisk); err != nil {
 		_ = io.Close()
 		return nil, fmt.Errorf("Failed to decode VolumeHeader '%s': %w", path, err)
 	}
 
-	if err = validateVolumeHeader(headerOndisk); err != nil {
+	if err = validateHeader(headerOndisk); err != nil {
 		_ = io.Close()
 		return nil, fmt.Errorf("Falied validation '%s': %w", path, err)
 	}
 
-	vol.header = volumeHeaderFrom(headerOndisk)
+	vol.header = headerFrom(headerOndisk)
 	
 	stat, err := vol.io.Stat()
 	if err != nil {
@@ -169,7 +169,7 @@ func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) 
 		refcnt: &sync.WaitGroup{},
 	}
 
-	headerOndisk := &volumeHeaderOndisk{
+	headerOndisk := &headerOndisk{
 		Magic: headerMagic,
 		Version: currentVersion,
 		Id: id,
@@ -177,7 +177,7 @@ func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) 
 		Reserved: [3]uint32{0, 0, 0},
 	}
 
-	if err = validateVolumeHeader(headerOndisk); err != nil {
+	if err = validateHeader(headerOndisk); err != nil {
 		_ = io.Close()
 		return nil, fmt.Errorf("Falied validation '%s': %w", path, err)
 	}
@@ -185,7 +185,7 @@ func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) 
 	struc.Pack(vol.io, headerOndisk) // internally shift cursor by @volumeHeaderOndiskSize
 
 	vol.cursor = atomic.Uint64{}
-	vol.cursor.Store(uint64(volumeHeaderOndiskSize))
+	vol.cursor.Store(uint64(headerOndiskSize))
 	vol.sync_offset = 0
 	vol.last_sync_ms = time.Now()
 
@@ -194,7 +194,7 @@ func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) 
 		return nil, err
 	}
 
-	vol.header = volumeHeaderFrom(headerOndisk)
+	vol.header = headerFrom(headerOndisk)
 
 	vol.logger.Info("Create new volume", "header", vol.header)
 
@@ -234,11 +234,11 @@ func (vol *Volume) Rewriter() (*VolumeRewriter) {
 	}
 }
 // Read only. do not modify values under returned pointer
-func (vol *Volume) Header() (VolumeHeader) { return vol.header }
+func (vol *Volume) Header() (Header) { return vol.header }
 // Since does not lock on access size result maybe approximate
 func (vol *Volume) Size() (unsyced, synced uint64) { return vol.cursor.Load(), vol.sync_offset }
 // length of ondisk VolumeHeader
-func (vol *Volume) HeaderEnd() (int) { return volumeHeaderOndiskSize }
+func (vol *Volume) HeaderEnd() (int) { return headerOndiskSize }
 
 func (vol *Volume) Sync() (error) {
 	vol.wrLock.Lock()
@@ -293,17 +293,17 @@ func (vr *VolumeReader) ReadAt(p []byte, off int64) (n int, err error) {
 		return 0, io.EOF
 	}
 	end := uint64(len(p))
-	if uint64(len(p)) + uint64(off) > cursor {
+	if end + uint64(off) > cursor {
 		end = cursor - uint64(off)
 	}
 	n, err = vr.vol.io.ReadAt(p[:end], off)
 
-	if end != uint64(len(p)) {
-		err = io.EOF
+	if err != nil {
+		vr.vol.logger.Error("Read error", "desc", err.Error())
 	}
 
-	if err != nil && err != io.EOF {
-		vr.vol.logger.Error("Read error", "desc", err.Error())
+	if n != len(p) {
+		err = io.EOF
 	}
 
 	return n, err
@@ -323,16 +323,27 @@ func (vw *VolumeWriter) Write(b []byte) (n int, err error) {
 	vw.vol.wrLock.Lock()
 	defer vw.vol.wrLock.Unlock()
 
-	n, err = vw.vol.io.Write(b)
-	
+	cursor := vw.vol.cursor.Load()
+	to_write := len(b)
+	if uint64(to_write) > vw.vol.header.MaxSize - cursor {
+		to_write = int(vw.vol.header.MaxSize - cursor)
+	}
+
+	if to_write == 0 {
+		return 0, io.EOF
+	}
+
+	n, err = vw.vol.io.Write(b[:to_write])
+	vw.vol.cursor.Add(uint64(n))
 	if err != nil {
 		vw.vol.logger.Error("Write error", "desc", err.Error())
 		return n, err
 	}
 
-	vw.vol.cursor.Add(uint64(n))
-
-	return n, err
+	if to_write != len(b) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 func (vw *VolumeWriter) Close() (err error) {

@@ -1,14 +1,17 @@
 package volume
 
 import (
+	"HaystackAtHome/internal/ss/models"
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
-	"crypto/rand"
 	"os"
 	"testing"
-	"HaystackAtHome/internal/ss/models"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestCreateAndOpen(t *testing.T) {
@@ -26,20 +29,20 @@ func TestCreateAndOpen(t *testing.T) {
 		return
 	}
 
-	path = "testcase/.volume.1"
+	path = ".volume.1"
 	logger = logger_def.With("volume", path)
 	vol, err = CreateAndOpen(path, 0, 1024, logger)
 	defer os.Remove(path)
 	defer vol.Close()
 	if vol == nil {
-		t.Errorf("vol = 'nil', want nonil")
+		t.Fatalf("vol = 'nil', want nonil")
 	}
 	if err != nil {
-		t.Errorf("err = '%s' want 'nil'", err.Error())
+		t.Fatalf("err = '%s' want 'nil'", err.Error())
 	}
 
-	if vol.cursor.Load() != uint64(volumeHeaderOndiskSize) {
-		t.Errorf("vol.cursor = '%d', want '%d'", vol.cursor.Load(), volumeHeaderOndiskSize)
+	if vol.cursor.Load() != uint64(headerOndiskSize) {
+		t.Errorf("vol.cursor = '%d', want '%d'", vol.cursor.Load(), headerOndiskSize)
 	}
 
 	if vol.sync_offset != vol.cursor.Load() {
@@ -50,7 +53,7 @@ func TestCreateAndOpen(t *testing.T) {
 func TestIO(t *testing.T) {
 	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 
-	path := "testcase/.volume.0"
+	path := ".volume.0"
 	logger := logger_def.With("volume", path)
 	vol, err := CreateAndOpen(path, 0, 1024 * 1024 * 1024, logger)
 	if err != nil {
@@ -87,6 +90,7 @@ func TestIO(t *testing.T) {
 		}
 
 		// read out of bounds
+		// github.com/google/go-cmp
 		n, err = fd_rd.ReadAt(buf, 1024)
 		if err != io.EOF {
 			if err == nil {
@@ -131,7 +135,7 @@ func TestIO(t *testing.T) {
 func TestReopen(t *testing.T) {
 	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 
-	path := "testcase/.volume.2"
+	path := ".volume.2"
 	logger := logger_def.With("volume", path)
 	var maxSize uint64 = 1024 * 1024 * 1024
 	vol, err := CreateAndOpen(path, 0, maxSize, logger)
@@ -160,13 +164,13 @@ func TestReopen(t *testing.T) {
 	if err != nil {
 		t.Errorf("err = '%s' want 'nil'", err.Error())
 	}
-	if vol.cursor.Load() != uint64(volumeHeaderOndiskSize) + sz {
-		t.Errorf("vol.cursor = '%d', want '%d'", vol.cursor.Load(), uint64(volumeHeaderOndiskSize) + sz)
+	if vol.cursor.Load() != uint64(headerOndiskSize) + sz {
+		t.Errorf("vol.cursor = '%d', want '%d'", vol.cursor.Load(), uint64(headerOndiskSize) + sz)
 	}
 	if vol.sync_offset != vol.cursor.Load() {
 		t.Errorf("vol.sync_offset '%d' != vol.cursor '%d'", vol.sync_offset, vol.cursor.Load())
 	}
-	header := VolumeHeader{
+	header := Header{
 		Id: 0,
 		MaxSize: maxSize,
 		Version: currentVersion,
@@ -179,12 +183,13 @@ func TestReopen(t *testing.T) {
 func TestParallelIO(t *testing.T) {
 	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 
-	path := "testcase/.volume.3"
+	path := ".volume.3"
+	os.Remove(path)
 	logger := logger_def.With("volume", path)
 	var maxSize uint64 = 1024 * 1024 * 1024
 	vol, err := CreateAndOpen(path, 0, maxSize, logger)
 	if err != nil {
-		t.Errorf("err = '%s' want 'nil'", err.Error())
+		t.Fatalf("err = '%s' want 'nil'", err.Error())
 	}
 	defer os.Remove(path)
 	defer vol.Close()
@@ -279,4 +284,69 @@ func TestParallelIO(t *testing.T) {
 		t.Run("[reader 2]", reader_test(fd_rd2, rd_bufs[5:10]...))
 		t.Run("[reader 3]", reader_test(fd_rd3, rd_bufs[10:]...))
 	})
+}
+
+func TestIOCorners(t *testing.T) {
+	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+
+	path := ".volume.3"
+	os.Remove(path)
+	logger := logger_def.With("volume", path)
+	var maxSize uint64 = 1024 * 1024
+	vol, err := CreateAndOpen(path, 0, maxSize, logger)
+	if err != nil {
+		t.Fatalf("err = '%s' want 'nil'", err.Error())
+	}
+	defer os.Remove(path)
+	defer vol.Close()
+
+	fd_wr := vol.Writer()
+	defer fd_wr.Close()
+	fd_rd := vol.Reader()
+	defer fd_rd.Close()
+
+	shift := 128
+	buf_wr := make([]byte, 1024 * 1024 - shift) // 128 rather bigger than volumeHeaderOndiskSize size
+	
+	n, err := fd_wr.Write(buf_wr)
+	if s := cmp.Diff(nil, err, cmpopts.EquateErrors()); s != "" {
+		t.Fatalf("1 fd_wr.Write() mismatch (-want +got):\n%s", s)
+	} 
+	if s := cmp.Diff(len(buf_wr), n); s != "" {
+		t.Fatalf("1 fd_wr.Write() mismatch (-want +got):\n%s", s)
+	}
+
+	n, err = fd_wr.Write(buf_wr[:256])
+	if s := cmp.Diff(io.EOF, err, cmpopts.EquateErrors()); s != "" {
+		t.Fatalf("2 fd_wr.Write() mismatch (-want +got):\n%s", s)
+	} 
+	if s := cmp.Diff(shift - int(headerOndiskSize), n); s != "" {
+		t.Fatalf("2 fd_wr.Write() mismatch (-want +got):\n%s", s)
+	}
+
+	buf_rd := make([]byte, 1024) 
+
+	n, err = fd_rd.ReadAt(buf_rd, 1024 * 1024 - 1024)
+	if s := cmp.Diff(nil, err, cmpopts.EquateErrors()); s != "" {
+		t.Fatalf("fd_wr.ReadAt() mismatch (-want +got):\n%s", s)
+	} 
+	if s := cmp.Diff(len(buf_rd), n); s != "" {
+		t.Fatalf("fd_wr.ReadAt() mismatch (-want +got):\n%s", s)
+	}
+
+	n, err = fd_rd.ReadAt(buf_rd, 1024 * 1024 - 1024 + 5)
+	if s := cmp.Diff(io.EOF, err, cmpopts.EquateErrors()); s != "" {
+		t.Fatalf("fd_wr.ReadAt() mismatch (-want +got):\n%s", s)
+	} 
+	if s := cmp.Diff(len(buf_rd) - 5, n); s != "" {
+		t.Fatalf("fd_wr.ReadAt() mismatch (-want +got):\n%s", s)
+	}
+
+	n, err = fd_rd.ReadAt(buf_rd, 1024 * 1024 - int64(shift))
+	if s := cmp.Diff(io.EOF, err, cmpopts.EquateErrors()); s != "" {
+		t.Fatalf("fd_wr.ReadAt() mismatch (-want +got):\n%s", s)
+	} 
+	if s := cmp.Diff(shift, n); s != "" {
+		t.Fatalf("fd_wr.ReadAt() mismatch (-want +got):\n%s", s)
+	}
 }
