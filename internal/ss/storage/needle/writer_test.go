@@ -2,72 +2,10 @@ package needle
 
 import (
 	"bytes"
-	"fmt"
-	"hash"
 	"hash/crc64"
-	"io"
 	"os"
 	"testing"
-
-	"github.com/lunixbochs/struc"
 )
-
-func rdNeedle(rd io.ReaderAt, off uint64, cs hash.Hash64) (*Header, []byte, error) {
-	h := headerOndisk{}
-
-	_off := int64(off)
-	
-	reader := io.NewSectionReader(rd, _off, int64(headerOndiskSize))
-	if err := struc.Unpack(reader, &h); err != nil {
-		return nil, nil, fmt.Errorf("failed to Unpack header: %v", err)
-	}
-
-	if err := validateHeader(&h, off); err != nil {
-		return nil, nil, fmt.Errorf("failed to validate header: %v", err)
-	}
-
-	cs.Reset()
-	savedFlags := h.Flags
-	h.Flags = 0
-	if err := struc.Pack(cs, &h); err != nil {
-		return nil, nil, fmt.Errorf("failed to Pack header to Hash: %v", err)
-	}
-	h.Flags = savedFlags
-
-	header := &Header{
-		Version: h.Version,
-		Key: h.Key,
-		DataSize: h.DataSize,
-		Flags: h.Flags,
-	}
-
-	_off += int64(headerOndiskSize)
-	reader = io.NewSectionReader(rd, _off, int64(h.DataSize))
-	tee := io.TeeReader(reader, cs)
-
-	data, err := io.ReadAll(tee)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to ReadAll tee: %v", err)
-	}
-	if len(data) != int(h.DataSize) {
-		return nil, nil, fmt.Errorf("data size mismatch: len(data) '%d', want '%d'", len(data), h.DataSize)
-	}
-
-	pad := calcFooterPadding(h.DataSize)
-	_off += int64(h.DataSize)
-	reader = io.NewSectionReader(rd, _off, int64(pad + footerOndiskSizeMin))
-
-	f := footerOndisk{}
-	if err := footerOndiskDecoderFrom(&f, pad).Unpack(reader); err != nil {
-		return nil, nil, fmt.Errorf("failed to Unpack footer: %v", err)
-	}
-
-	if err := validateFooter(&f, uint64(_off), cs.Sum64()); err != nil {
-		return nil, nil, fmt.Errorf("failed to validate footer: %v", err)
-	}
-
-	return header, data, nil
-}
 
 func TestSimpleWriter(t *testing.T) {
 	path := ".volume.test.writer"

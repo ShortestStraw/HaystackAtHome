@@ -13,8 +13,13 @@ package needle
 
 import (
 	"encoding/binary"
+	"github.com/lunixbochs/struc"
 	"io"
 	"HaystackAtHome/internal/ss/models"
+	"hash/crc64"
+	"hash"
+	"fmt"
+	"bytes"
 )
 
 const (
@@ -172,3 +177,102 @@ var(
 		{12313, []byte("asdfghjklzxcvbmnbvcxzxcguioaffgd1qwsedrfghnjmk,l.sdvfz`1234567890-~\\xz??|!@#$$%^&*()_+-=")},
 	}
 )
+
+// Simple Needle writer for tests
+func wrNeedle(file_buf []byte, key uint64, data []byte) (uint64) {
+	buf := make([]byte, 0, headerOndiskSize + footerOndiskSizeMax + uint64(len(data)))
+	if len(buf) > len(file_buf) {
+		return 0
+	}
+	wr := bytes.NewBuffer(buf)
+	h := &headerOndisk{
+		Magic: headerMagic,
+		Version: currentVersion,
+		Key: key,
+		Flags: 0,
+		DataSize: uint64(len(data)),
+		Reserved: [2]uint64{0, 0},
+	}
+	cser := crc64.New(crc64.MakeTable(crc64.ISO))
+	cser.Reset()
+	
+	struc.Pack(cser, h)
+	struc.Pack(wr, h)
+
+	reader := bytes.NewReader(data)
+	tee := io.TeeReader(reader, cser)
+
+	io.Copy(wr, tee)
+	
+	pad := calcFooterPadding(h.DataSize)
+	cs := cser.Sum64()
+	f := &footerOndisk{
+		Magic: footerMagic,
+		Checksum: cs,
+	}
+
+	enc := footerOndiskEncoderFrom(f, pad)
+	enc.Pack(wr)
+
+	wr.Read(file_buf)
+
+	return uint64(len(data)) + headerOndiskSize + footerOndiskSizeMin + pad
+}
+
+// Simple Needle reader for tests
+func rdNeedle(rd io.ReaderAt, off uint64, cs hash.Hash64) (*Header, []byte, error) {
+	h := headerOndisk{}
+
+	_off := int64(off)
+	
+	reader := io.NewSectionReader(rd, _off, int64(headerOndiskSize))
+	if err := struc.Unpack(reader, &h); err != nil {
+		return nil, nil, fmt.Errorf("failed to Unpack header: %v", err)
+	}
+
+	if err := validateHeader(&h, off); err != nil {
+		return nil, nil, fmt.Errorf("failed to validate header: %v", err)
+	}
+
+	cs.Reset()
+	savedFlags := h.Flags
+	h.Flags = 0
+	if err := struc.Pack(cs, &h); err != nil {
+		return nil, nil, fmt.Errorf("failed to Pack header to Hash: %v", err)
+	}
+	h.Flags = savedFlags
+
+	header := &Header{
+		Version: h.Version,
+		Key: h.Key,
+		DataSize: h.DataSize,
+		Flags: h.Flags,
+	}
+
+	_off += int64(headerOndiskSize)
+	reader = io.NewSectionReader(rd, _off, int64(h.DataSize))
+	tee := io.TeeReader(reader, cs)
+
+	data, err := io.ReadAll(tee)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to ReadAll tee: %v", err)
+	}
+	if len(data) != int(h.DataSize) {
+		return nil, nil, fmt.Errorf("data size mismatch: len(data) '%d', want '%d'", len(data), h.DataSize)
+	}
+
+	pad := calcFooterPadding(h.DataSize)
+	_off += int64(h.DataSize)
+	reader = io.NewSectionReader(rd, _off, int64(pad + footerOndiskSizeMin))
+
+	f := footerOndisk{}
+	if err := footerOndiskDecoderFrom(&f, pad).Unpack(reader); err != nil {
+		return nil, nil, fmt.Errorf("failed to Unpack footer: %v", err)
+	}
+
+	if err := validateFooter(&f, uint64(_off), cs.Sum64()); err != nil {
+		return nil, nil, fmt.Errorf("failed to validate footer: %v", err)
+	}
+
+	return header, data, nil
+}

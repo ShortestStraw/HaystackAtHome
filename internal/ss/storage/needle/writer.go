@@ -2,6 +2,7 @@ package needle
 
 import (
 	"bytes"
+	"fmt"
 	"hash"
 	"io"
 
@@ -53,13 +54,13 @@ func (w *Writer) Write(b []byte) (int, error) {
 	if !w.hDone {
 		buf := bytes.NewBuffer(make([]byte, 0, headerOndiskSize))
 		if err := struc.Pack(buf, w.h); err != nil {
-			return 0, err
+			return 0, fmt.Errorf("failed to pack header: %v", err)
 		}
 
 		written, err := io.Copy(w.fd, buf)
 		amendment = int(written)
 		if err != nil {
-			return amendment, err
+			return amendment, fmt.Errorf("failed to serealize header: %v", err)
 		}
 		
 		w.hDone = true
@@ -108,11 +109,14 @@ func (w *Writer) Write(b []byte) (int, error) {
 		if err = enc.Pack(w.fd); err == nil {
 			amendment += int(pad) + int(footerOndiskSizeMin)
 		}
-		return _written + amendment, err
+		return _written + amendment, fmt.Errorf("failed to sereailze footer: %v", err)
 	}
 	return _written + amendment, nil
 }
 
 func (w *Writer) Close() error {
-	return w.fd.Close()
+	if err := w.fd.Close(); err != nil {
+		return fmt.Errorf("failed to close io: %v", err)
+	}
+	return nil
 } 
