@@ -3,7 +3,6 @@ package needle
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc64"
@@ -18,52 +17,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lunixbochs/struc"
+	"HaystackAtHome/internal/ss/models"
 
 	"golang.org/x/sys/unix"
 )
-
-func wrNeedle(file_buf []byte, key uint64, data []byte) (uint64) {
-	buf := make([]byte, 0, headerOndiskSize + footerOndiskSizeMax + uint64(len(data)))
-	if len(buf) > len(file_buf) {
-		return 0
-	}
-	wr := bytes.NewBuffer(buf)
-	h := &headerOndisk{
-		Magic: headerMagic,
-		Version: currentVersion,
-		Key: key,
-		Flags: 0,
-		DataSize: uint64(len(data)),
-		Reserved: [2]uint64{0, 0},
-	}
-	cser := crc64.New(crc64.MakeTable(crc64.ISO))
-	cser.Reset()
-	
-	struc.Pack(cser, h)
-	struc.Pack(wr, h)
-
-	reader := bytes.NewReader(data)
-	tee := io.TeeReader(reader, cser)
-
-	io.Copy(wr, tee)
-	
-	pad := calcFooterPadding(h.DataSize)
-	csbuf := make([]byte, 0, 8)
-	cs := binary.LittleEndian.Uint64(cser.Sum(csbuf))
-
-	f := &footerOndisk{
-		Magic: footerMagic,
-		Checksum: cs,
-	}
-
-	enc := footerOndiskEncoderFrom(f, pad)
-	enc.Pack(wr)
-
-	wr.Read(file_buf)
-
-	return uint64(len(data)) + headerOndiskSize + footerOndiskSizeMin + pad
-}
 
 func testSimpleScanerCase(t *testing.T, ctx context.Context, logger *slog.Logger, file_buf []byte, buf_sz uint64, ra bool) {
 	rd := bytes.NewReader(file_buf)
@@ -110,8 +67,10 @@ func testSimpleScanerCase(t *testing.T, ctx context.Context, logger *slog.Logger
 		n++
 	}
 
-	target := &ErrValidation{}
-	if !(errors.As(err, &target) || err == io.EOF) {
+	target1 := &models.ErrObjValidation{}
+	target2 := &models.ErrObjCSMismatch{}
+
+	if !errors.As(err, &target1) && !errors.As(err, &target2) && err != io.EOF {
 		t.Errorf("last err = '%s', want '&ErrValidation{}' or 'io.EOF", err.Error())
 	}
 }
@@ -235,9 +194,10 @@ func testScanerOffsetsCase(
 		nh, err = it.Next(ctx)
 	}
 
-	target := &ErrValidation{}
+	target1 := &models.ErrObjValidation{}
+	target2 := &models.ErrObjCSMismatch{}
 
-	if !errors.As(err, &target) && err != io.EOF {
+	if !errors.As(err, &target1) && !errors.As(err, &target2) && err != io.EOF {
 		t.Errorf("last err = '%s', want '&ErrValidation{}'", err.Error())
 	}
 
@@ -598,11 +558,11 @@ func benchmarkScaner(b *testing.B, inmem []byte, ondisk *file_, bufSz uint64, ra
 		b.StartTimer()
 		var nh *Header
 		nh, err = it.Next(b.Context())
-		target := &ErrValidation{}
+		target := &models.ErrObjValidation{}
 		for ; err == nil || errors.As(err, &target); nh, err = it.Next(b.Context()) {
 			_ = nh
 			countNext++
-			target = &ErrValidation{}
+			target = &models.ErrObjValidation{}
 		}
 		countNext++
 
