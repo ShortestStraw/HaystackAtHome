@@ -103,7 +103,7 @@ type Volume struct {
 	refcnt       *sync.WaitGroup // semaphore that Close() wait empty chan for termination
 	close_st     bool
 
-	logger       slog.Logger
+	logger       *slog.Logger
 }
 
 // Open existing volume and returns new *Volume instance with opened underlying volume's 
@@ -119,7 +119,7 @@ func Open(path string, logger *slog.Logger) (*Volume, error) {
 
 	vol := &Volume{
 		io: io,
-		logger: *logger,
+		logger: logger,
 		wrLock: &sync.Mutex{},
 		refcnt: &sync.WaitGroup{},
 	}
@@ -148,7 +148,9 @@ func Open(path string, logger *slog.Logger) (*Volume, error) {
 	vol.sync_offset = uint64(stat.Size())
 	vol.last_sync_ms = time.Now()
 
-	vol.logger.Info("Volume opened", "header", vol.header)
+	if vol.logger != nil {
+		vol.logger.Info("Volume opened", "header", vol.header)
+	}
 
 	return vol, nil
 }
@@ -164,7 +166,7 @@ func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) 
 
 	vol := &Volume{
 		io: io,
-		logger: *logger,
+		logger: logger,
 		wrLock: &sync.Mutex{},
 		refcnt: &sync.WaitGroup{},
 	}
@@ -196,7 +198,9 @@ func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) 
 
 	vol.header = headerFrom(headerOndisk)
 
-	vol.logger.Info("Create new volume", "header", vol.header)
+	if vol.logger != nil {
+		vol.logger.Info("Create new volume", "header", vol.header)
+	}
 
 	return vol, nil
 }
@@ -247,12 +251,17 @@ func (vol *Volume) Sync() (error) {
 	err := vol.io.Sync()
 	
 	if err != nil {
-		vol.logger.Error("Sync error", "desc", err.Error())
+		if vol.logger != nil {
+			vol.logger.Error("Sync error", "desc", err.Error())
+		}
 		return err
 	}
 
 	vol.sync_offset = vol.cursor.Load()
-	vol.logger.Info("Sync", "offset", vol.sync_offset)
+
+	if vol.logger != nil {
+		vol.logger.Info("Sync", "offset", vol.sync_offset)
+	}
 
 	return err
 }
@@ -268,9 +277,13 @@ func (vol *Volume) Close() (err error) {
 	}
 
 	if err = vol.io.Close(); err != nil {
-		vol.logger.Error("Close error", "desc", err.Error())
+		if vol.logger != nil {
+			vol.logger.Error("Close error", "desc", err.Error())
+		}
 	} else {
-		vol.logger.Info("Closed noramlly")
+		if vol.logger != nil {
+			vol.logger.Info("Closed noramlly")
+		}
 	}
 
 	return err
@@ -299,7 +312,9 @@ func (vr *VolumeReader) ReadAt(p []byte, off int64) (n int, err error) {
 	n, err = vr.vol.io.ReadAt(p[:end], off)
 
 	if err != nil {
-		vr.vol.logger.Error("Read error", "desc", err.Error())
+		if vr.vol.logger != nil {
+			vr.vol.logger.Error("Read error", "desc", err.Error())
+		}
 	}
 
 	if n != len(p) {
@@ -336,7 +351,9 @@ func (vw *VolumeWriter) Write(b []byte) (n int, err error) {
 	n, err = vw.vol.io.Write(b[:to_write])
 	vw.vol.cursor.Add(uint64(n))
 	if err != nil {
-		vw.vol.logger.Error("Write error", "desc", err.Error())
+		if vw.vol.logger != nil {
+			vw.vol.logger.Error("Write error", "desc", err.Error())
+		}
 		return n, err
 	}
 
@@ -381,7 +398,9 @@ func (vrw *VolumeRewriter) WriteAt(b []byte, off int64) (n int, err error) {
 	}
 
 	if err != nil && err != io.EOF {
-		vrw.vol.logger.Error("WriteAt error", "desc", err.Error())
+		if vrw.vol.logger != nil {
+			vrw.vol.logger.Error("WriteAt error", "desc", err.Error())
+		}
 		return n, err
 	}
 
