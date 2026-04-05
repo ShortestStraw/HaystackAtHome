@@ -20,7 +20,6 @@ type WriteAtCloser interface {
 type VolumeSpaceUsage struct {
 	Free             uint64  // space that can be written by new objects
 	Used             uint64  // space used by all objects
-	Garbage          uint64  // space used by deleted objects
 }
 
 type Volume struct {
@@ -29,7 +28,7 @@ type Volume struct {
 }
 
 type VolumeStat struct {
-	Space            VolumeSpaceUsage
+	Info             Volume
 	PendingReads     int
 	RunningReads     int
 	PendingWrites    int
@@ -38,6 +37,7 @@ type VolumeStat struct {
 
 type ObjFlags struct {
 	Deleted          bool
+	CsMismatched     bool
 	// Others will be added as needed
 }
 
@@ -59,13 +59,13 @@ type StorageStats struct {
 }
 
 type StorageMetrics struct {
-	TotalWrites      *prom.Counter
-	TotalReads       *prom.Counter
+	TotalWrites      *prom.CounterVec // labels: {<volumeKey>}
+	TotalReads       *prom.CounterVec // labels: {<volumeKey>}
 
-	ReadErrors       *prom.CounterVec // labels: {<error>}
-	WriteErrors      *prom.CounterVec // labels: {<error>}
+	ReadErrors       *prom.CounterVec // labels: {<volumeKey>, <error>}
+	WriteErrors      *prom.CounterVec // labels: {<volumeKey>, <error>}
 
-	Latencies        *prom.HistogramVec // labels: {<volumeKey>, [read|write|delete]}
+	Latencies        *prom.HistogramVec // labels: {<volumeKey>, [read|write|delete|datasync]}
 	Sizes            *prom.GaugeVec // labels: {<volumeKey>}
 
 	Compaction       *prom.GaugeVec // 0-1 state; labels: {<volumeKey>, [from|to]}
@@ -138,9 +138,6 @@ type Storage interface {
 
 	// Mark object as deleted. To actually remove CompactVolume or RemoveVolume must be called on this volume
 	MarkDeleteObject(ctx context.Context, volKey, objKey, off uint64) (error)
-
-	// if setted storage will report it state to them
-	SetMetrics(metrics *StorageMetrics)
 
 	// Close all volumes, flushing all buffers and free inmem state
 	// all references provided by interface must not be used after Close.

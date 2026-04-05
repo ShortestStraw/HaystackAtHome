@@ -8,6 +8,19 @@ func (e *ErrUnimplemented) Error() string {
 	return "Unimplememted"
 }
 
+type ErrInvalidParams struct {
+	msg string
+}
+
+func NewErrInvalidParams(msg string) *ErrInvalidParams {
+	return &ErrInvalidParams {
+		msg: msg,
+	}
+}
+
+func (e *ErrInvalidParams) Error() string {
+	return e.msg
+}
 
 type ErrVolValidation struct {
 	path string
@@ -66,6 +79,11 @@ func (e *ErrObjValidation) Offset() uint64 {
 
 type ErrObjCSMismatch struct {
 	msg  string
+}
+
+func (e *ErrObjCSMismatch) Is(targer error) bool {
+	_, ok := targer.(*ErrObjCSMismatch)
+	return ok
 }
 
 func NewErrObjCSMismatch(msg string) *ErrObjCSMismatch {
