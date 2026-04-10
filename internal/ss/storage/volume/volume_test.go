@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
-	"log/slog"
 	"os"
 	"testing"
 
@@ -15,7 +14,7 @@ import (
 )
 
 func TestCreateAndOpen(t *testing.T) {
-	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	logger_def := testLogger()
 	
 	path := "./tescase/.volume.doesnotexist"
 	logger := logger_def.With("volume", path)
@@ -51,7 +50,7 @@ func TestCreateAndOpen(t *testing.T) {
 }
 
 func TestIO(t *testing.T) {
-	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	logger_def := testLogger()
 
 	path := ".volume.0"
 	logger := logger_def.With("volume", path)
@@ -133,7 +132,7 @@ func TestIO(t *testing.T) {
 }
 
 func TestReopen(t *testing.T) {
-	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	logger_def := testLogger()
 
 	path := ".volume.2"
 	logger := logger_def.With("volume", path)
@@ -181,7 +180,7 @@ func TestReopen(t *testing.T) {
 }
 
 func TestParallelIO(t *testing.T) {
-	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	logger_def := testLogger()
 
 	path := ".volume.3"
 	os.Remove(path)
@@ -287,7 +286,7 @@ func TestParallelIO(t *testing.T) {
 }
 
 func TestIOCorners(t *testing.T) {
-	logger_def := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	logger_def := testLogger()
 
 	path := ".volume.3"
 	os.Remove(path)
