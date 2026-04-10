@@ -425,10 +425,9 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 	it, err := needle.NewIter(ctx, vol.Reader(), opts...)
 
 	checkErr := func(err error) bool {
-		target := &models.ErrObjValidation{}
-		return err == nil || 
-		       errors.Is(err, &models.ErrObjCSMismatch{}) || 
-					 errors.As(err, &target)
+		return err == nil ||
+			errors.Is(err, &models.ErrObjCSMismatch{}) ||
+			errors.Is(err, &models.ErrObjValidation{})
 	}
 
 	if err != nil {

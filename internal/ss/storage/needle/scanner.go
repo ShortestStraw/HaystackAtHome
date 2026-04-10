@@ -430,9 +430,7 @@ On last call return nil, io.EOF.
 Other errors are same as for NewIter.
 */
 func (it *Iter) Next(ctx context.Context) (nh *Header, err error) {
-	eTarget1 := &models.ErrObjValidation{}
-	eTarget2 := &models.ErrObjCSMismatch{}
-	if err = it.getNeedle(ctx); err != nil && !errors.As(err, &eTarget1) && !errors.As(err, &eTarget2){
+	if err = it.getNeedle(ctx); err != nil && !errors.Is(err, &models.ErrObjValidation{}) && !errors.Is(err, &models.ErrObjCSMismatch{}) {
 		return nil, err
 	} else {
 		nh = &Header{

@@ -2,3 +2,4 @@
 /internal/transport/gw-ss*
 !/internal/transport/gw-ss.proto
 *.volume.test*
+CLAUDE.md

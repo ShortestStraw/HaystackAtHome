@@ -1,3 +1,5 @@
+// All errors implement Is method, so that they can be checked with errors.Is()
+// without matching error and target fields
 package models
 
 import "strconv"
@@ -18,6 +20,11 @@ func NewErrInvalidParams(msg string) *ErrInvalidParams {
 	}
 }
 
+func (e *ErrInvalidParams) Is(targer error) bool {
+	_, ok := targer.(*ErrInvalidParams)
+	return ok
+}
+
 func (e *ErrInvalidParams) Error() string {
 	return e.msg
 }
@@ -34,6 +41,11 @@ func NewErrVolValidation(msg string, key uint64, path string) *ErrVolValidation 
 		key: key,
 		msg: msg,
 	}
+}
+
+func (e *ErrVolValidation) Is(targer error) bool {
+	_, ok := targer.(*ErrVolValidation)
+	return ok
 }
 
 func (e *ErrVolValidation) Error() string {
@@ -73,6 +85,11 @@ func (e *ErrObjValidation) Error() string {
 	return e.msg
 }
 
+func (e *ErrObjValidation) Is(targer error) bool {
+	_, ok := targer.(*ErrObjValidation)
+	return ok
+}
+
 func (e *ErrObjValidation) Offset() uint64 {
 	return e.off
 }
@@ -81,17 +98,16 @@ type ErrObjCSMismatch struct {
 	msg  string
 }
 
-func (e *ErrObjCSMismatch) Is(targer error) bool {
-	_, ok := targer.(*ErrObjCSMismatch)
-	return ok
-}
-
 func NewErrObjCSMismatch(msg string) *ErrObjCSMismatch {
 	return &ErrObjCSMismatch{
 		msg: msg,
 	}
 }
 
+func (e *ErrObjCSMismatch) Is(targer error) bool {
+	_, ok := targer.(*ErrObjCSMismatch)
+	return ok
+}
 
 func (e *ErrObjCSMismatch) Error() string {
 	return e.msg
