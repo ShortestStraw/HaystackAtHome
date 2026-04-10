@@ -115,7 +115,7 @@ type Storage interface {
 	// Second returned value is offset of future needle. It is an ErrValidation to call
 	// GetObjectReader or MarkDeleteObject on object, which io was not closed yet.
 	// 
-	// For both PutObjectWriter Close should be offloaded 
+	// For PutObjectWriter Close should be offloaded 
 	// (since it make block for a lot of time) to coroutine like that
 	//
 	//	io, off, err := PutObjectWriter(...)
@@ -129,6 +129,9 @@ type Storage interface {
 	//		...
 	//	}
 	//
+	// On errored Close() data is in undefined state and full object write should be retried.
+	// Storage must provide retry mechanism for this case, but user should be ready to do it by himself. 
+	// On successfull Close() data must be fully written, synced and can be read by GetObjectReader.
 	PutObjectWriter(volKey, objKey, dataSize uint64) (*io.WriteCloser, uint64, error)
 
 	// GetObjectReader creates io.ReadCloser from which object data can be read
