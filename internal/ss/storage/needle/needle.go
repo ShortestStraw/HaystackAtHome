@@ -12,14 +12,15 @@ When scaning and writing new Needle checksum is calculated as crc64 of header (w
 package needle
 
 import (
-	"encoding/binary"
-	"github.com/lunixbochs/struc"
-	"io"
 	"HaystackAtHome/internal/ss/models"
-	"hash/crc64"
-	"hash"
-	"fmt"
 	"bytes"
+	"encoding/binary"
+	"fmt"
+	"hash"
+	"hash/crc64"
+	"io"
+
+	"github.com/lunixbochs/struc"
 )
 
 const (
@@ -36,6 +37,8 @@ const (
 	footerMagic uint64 = 0x1234567890ABCDEF
 
 	DataShift = headerOndiskSize // Shift of object data offset relatively to its header offset
+
+	flagsDeleted uint64 = 0x1 << 0
 )
 
 // Respresent needle ondisk header. see NeedleHeader type
@@ -149,6 +152,9 @@ type Header struct {
 	DataSize    uint64   // actual object size
 }
 
+func FlagsDeleted(flags uint64) bool {
+	return flags & flagsDeleted != 0
+}
 // @off is offset on the beggining of header
 // TODO
 func MarkNeedleDeleted(rd io.ReaderAt, off uint64) error {

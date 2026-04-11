@@ -78,3 +78,14 @@ To start the API Gateway:
 ```bash
 ./gw -config config.toml -name <gw-name>
 ```
+
+### Testing 
+To run functional/unit tests run
+```bash
+make test
+```
+
+To run benchmarks run
+```bash
+make bench
+```

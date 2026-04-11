@@ -67,10 +67,7 @@ func testSimpleScanerCase(t *testing.T, ctx context.Context, logger *slog.Logger
 		n++
 	}
 
-	target1 := &models.ErrObjValidation{}
-	target2 := &models.ErrObjCSMismatch{}
-
-	if !errors.As(err, &target1) && !errors.As(err, &target2) && err != io.EOF {
+	if !errors.Is(err, &models.ErrObjValidation{}) && !errors.Is(err, &models.ErrObjCSMismatch{}) && err != io.EOF {
 		t.Errorf("last err = '%s', want '&ErrValidation{}' or 'io.EOF", err.Error())
 	}
 }
@@ -194,10 +191,7 @@ func testScanerOffsetsCase(
 		nh, err = it.Next(ctx)
 	}
 
-	target1 := &models.ErrObjValidation{}
-	target2 := &models.ErrObjCSMismatch{}
-
-	if !errors.As(err, &target1) && !errors.As(err, &target2) && err != io.EOF {
+	if !errors.Is(err, &models.ErrObjValidation{}) && !errors.Is(err, &models.ErrObjCSMismatch{}) && err != io.EOF {
 		t.Errorf("last err = '%s', want '&ErrValidation{}'", err.Error())
 	}
 
@@ -558,11 +552,9 @@ func benchmarkScaner(b *testing.B, inmem []byte, ondisk *file_, bufSz uint64, ra
 		b.StartTimer()
 		var nh *Header
 		nh, err = it.Next(b.Context())
-		target := &models.ErrObjValidation{}
-		for ; err == nil || errors.As(err, &target); nh, err = it.Next(b.Context()) {
+		for ; err == nil || errors.Is(err, &models.ErrObjValidation{}); nh, err = it.Next(b.Context()) {
 			_ = nh
 			countNext++
-			target = &models.ErrObjValidation{}
 		}
 		countNext++
 
