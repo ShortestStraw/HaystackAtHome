@@ -19,7 +19,6 @@ import (
 	"hash"
 	"hash/crc64"
 	"io"
-	"unsafe"
 
 	"github.com/lunixbochs/struc"
 )
@@ -53,9 +52,8 @@ type headerOndisk struct {
 	Reserved    [2]uint64  `struc:"[2]uint64,big"`
 }
 
-var (
-	flagsShift = uint64(unsafe.Offsetof(headerOndisk{}.Flags))
-)
+// serialized offset of Flags in headerOndisk: Magic(8) + Version(4) + Key(8)
+const flagsShift = uint64(20)
 
 // Represent needle ondisk trailer
 // pading pads the whole Needle to 8 bytes so 
@@ -175,9 +173,9 @@ type Header struct {
 func FlagsDeleted(flags uint64) bool {
 	return flags & flagsDeleted != 0
 }
+
 // @off is offset on the beggining of header
-// TODO
-func MarkNeedleDeleted(wr io.WriterAt, oldFlags, off uint64) error {
+func MarkDeleted(wr io.WriterAt, oldFlags, off uint64) error {
 	newFlags := oldFlags | flagsDeleted
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, newFlags)
