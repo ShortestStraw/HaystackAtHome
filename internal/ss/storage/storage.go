@@ -3,10 +3,13 @@ package storage
 import (
 	"HaystackAtHome/internal/ss/models"
 	"HaystackAtHome/internal/ss/storage/volume"
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
+	"hash"
 	"hash/crc64"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,13 +20,79 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	// prom "github.com/prometheus/client_golang/prometheus"
+
+	prom "github.com/prometheus/client_golang/prometheus"
 )
 
 const (
 	volPrefix = ".volume."
 	timeoutVolsClose = 30 * time.Second
+	timeoutWriteWaiter = 5 * time.Second
 )
+
+type volCtx struct {
+	lock   *sync.RWMutex // for cuncurrent ops with volume and volume context
+	                     // it is very hot RWMutex, so may need research for other 
+											 // implementations if fairness will not match our workload
+	v      *volume.Volume
+	wq     *list.List // list of chans for notification of enqueued goroutines
+	off    uint64 // volume offset with enqueued write requests
+	buf    *struct {
+		vol    bytes.Buffer  // indexed by volume Keys
+		sz     uint64   // if set to 0 then buffering is off
+	}
+}
+
+type waiter struct {
+	ch    <-chan error
+}
+
+// must be called not under volCtx lock
+func (w *waiter) Wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-w.ch:
+		return err
+	}
+}
+
+// must be called under volCtx Wlock
+func enqueueSelf(wq *list.List) (*waiter) {
+	ch := make(chan error, 1)
+	w := &waiter{ ch: ch }
+	wq.PushFront(ch)
+	return w
+}
+
+// must be called under volCtx Wlock
+func notifyNext(wq *list.List, err error) {
+	if wq.Len() == 0 {
+		return
+	}
+
+	e := wq.Back()
+	ch := wq.Remove(e).(chan<- error)
+	ch<- err
+	close(ch)
+}
+
+// must be called under volCtx Wlock
+func (vc *volCtx) enqueueSelf(writeSize uint64) *waiter {
+	written, _ := vc.v.Size()
+	immediateNotify := vc.off == written
+	vc.off += writeSize
+	w := enqueueSelf(vc.wq)
+	if immediateNotify {
+		notifyNext(vc.wq, nil)
+	}
+	return w
+}
+
+// must be called under volCtx Wlock
+func (vc *volCtx) notifyNext(err error) {
+	notifyNext(vc.wq, err)
+}
 
 /*
 	On disk storage organized as directory on filesystem
@@ -40,23 +109,23 @@ const (
 
 	TODO lsm .index file for fast start. Maybe it will be better to have own .index for each volume
 	since reading and iterating over index may be paralleled with consequetive maps merge
+
+	TODO fsync\fdatasync latency, count and error accounting. Need to extend models.StorageMetrics
+
+	TODO write recovery on partial or cancelled writes to volume. May be 
 */
 type Storage struct {
-	root     *os.Root
-	logger   *slog.Logger
-	metrics  *models.StorageMetrics
-	CsOn     bool
+	root       *os.Root
+	logger     *slog.Logger
+	metrics    *models.StorageMetrics
+	csOn       bool
+	buffering  uint64 // if non null buffering is on and size of buffers is equal to this value
 
-	bufs struct {
-		vol    map[uint64]bytes.Buffer  // indexed by volume Keys
-		sz     uint64   // if set to 0 then buffering is off
-	}
-
-	volsMtx  *sync.RWMutex // for addition and deletion elemnts from vol and volLock maps
-	                       // for modification of volumes can be read locked but volLock for each 
-												 // volume should be used write locked for writes
-	vol      map[uint64]*volume.Volume
-	volLock  map[uint64]*sync.RWMutex // must allways be used only after volsMtx is locked for read or write
+	// for addition and deletion elements from vol maps
+	// for modification of volumes can be read locked but
+	// volCtx-s must be locked with it RWLock for modification
+	volsMtx    *sync.RWMutex 
+	vol        map[uint64]*volCtx
 }
 
 type Option func (*Storage)
@@ -78,13 +147,13 @@ func WithMetrics(metrics *models.StorageMetrics) Option {
 // objects can still be read with checksum mismatch
 func WithObjectChecksumming() Option {
 	return func (stor *Storage) {
-		stor.CsOn = true
+		stor.csOn = true
 	}
 }
 
 func WithVolumeWriteBuffering(bufSize uint64) Option {
 	return func(stor *Storage) {
-		stor.bufs.sz = bufSize
+		stor.buffering = bufSize
 	}
 }
 
@@ -114,6 +183,7 @@ func Open(ctx context.Context, storRoot string, opts... Option) (*Storage, error
 	stor := &Storage{
 		root: root,
 		volsMtx: &sync.RWMutex{},
+		vol: make(map[uint64]*volCtx),
 	}
 
 	for _, opt := range opts {
@@ -157,21 +227,116 @@ func (stor *Storage) volPath(volKey uint64) string {
 	return stor.root.Name() + "/" + fmt.Sprintf("%s%d", volPrefix, volKey)
 }
 
-func (stor *Storage) metricsAddVol(key, size uint64) {
+func (stor *Storage) metricsAddVol(volKey, size uint64) {
 	if stor.metrics != nil {
 		if stor.metrics.Sizes != nil {
-			label := fmt.Sprint(key)
+			label := stor.volPath(volKey)
 			stor.metrics.Sizes.WithLabelValues(label).Set(float64(size))
 		}
 	}
 }
 
-func (stor *Storage) metricsRemoveVol(key uint64) {
+func (stor *Storage) metricsRemoveVol(volKey uint64) {
 	if stor.metrics != nil {
 		if stor.metrics.Sizes != nil {
-			label := fmt.Sprint(key)
+			label := stor.volPath(volKey)
 			stor.metrics.Sizes.DeleteLabelValues(label)
 		}
+	}
+}
+
+func (stor *Storage) metricsAccountWriter(volKey uint64) {
+	if stor.metrics != nil {
+		if stor.metrics.TotalWrites != nil {
+			label := stor.volPath(volKey)
+			stor.metrics.TotalWrites.WithLabelValues(label).Inc()
+		}
+	}
+}
+
+func (stor *Storage) metricsWriteLatencyObserver(volKey uint64) prom.Observer {
+	if stor.metrics != nil {
+		if stor.metrics.Latencies != nil {
+			volLabel := stor.volPath(volKey)
+			return stor.metrics.Latencies.WithLabelValues(volLabel, "write")
+		}
+	}
+	return nil
+}
+
+func (stor *Storage) metricsWriteSizeObserver(volKey uint64) prom.Gauge {
+	if stor.metrics != nil {
+		if stor.metrics.Sizes != nil {
+			label := stor.volPath(volKey)
+			return stor.metrics.Sizes.WithLabelValues(label)
+		}
+	}
+	return nil
+}
+
+func (stor *Storage) metricsWriteBytesCounter(volKey uint64) prom.Counter {
+	if stor.metrics != nil {
+		if stor.metrics.TotalWriteBytes != nil {
+			label := stor.volPath(volKey)
+			return stor.metrics.TotalWriteBytes.WithLabelValues(label)
+		}
+	}
+	return nil
+}
+
+func (stor *Storage) metricsAccountReader(volKey uint64) {
+	if stor.metrics != nil {
+		if stor.metrics.TotalReads != nil {
+			label := stor.volPath(volKey)
+			stor.metrics.TotalReads.WithLabelValues(label).Inc()
+		}
+	}
+}
+
+
+func (stor *Storage) metricsReadLatencyObserver(volKey uint64) prom.Observer {
+	if stor.metrics != nil {
+		if stor.metrics.Latencies != nil {
+			volLabel := stor.volPath(volKey)
+			return stor.metrics.Latencies.WithLabelValues(volLabel, "read")
+		}
+	}
+	return nil
+}
+
+func (stor *Storage) metricsReadBytesCounter(volKey uint64) prom.Counter {
+	if stor.metrics != nil {
+		if stor.metrics.TotalReadBytes != nil {
+			label := stor.volPath(volKey)
+			return stor.metrics.TotalReadBytes.WithLabelValues(label)
+		}
+	}
+	return nil
+}
+
+func (stor *Storage) metricsAccountError(vec *prom.CounterVec, volKey uint64, err error) {
+	if vec == nil || err == nil {
+		return
+	}
+	volLabel := stor.volPath(volKey)
+	var errLabel string
+	if s, ok := err.(fmt.Stringer); ok == true {
+		errLabel = s.String()
+	} else {
+		errLabel = fmt.Sprintf("%T", err)
+	}
+	vec.WithLabelValues(volLabel, errLabel).Inc()
+}
+
+func (stor *Storage) metricsAccountWriteError(volKey uint64, err error) {
+	if stor.metrics != nil {
+		stor.metricsAccountError(stor.metrics.WriteErrors, volKey, err)
+	}
+}
+
+func (stor *Storage) metricsAccountReadError(volKey uint64, err error) {
+	if stor.metrics != nil {
+		stor.metricsAccountError(stor.metrics.ReadErrors, volKey, err)
 	}
 }
 
@@ -180,8 +345,8 @@ type open_co_ctx struct{
 	err  error
 }
 
-// in case of error closes volume implicitelly
-func (stor *Storage) openOrCreateVolUnsafe(ctx context.Context, create bool, relpath string, id, maxSize uint64) (uint64, error) {
+// in case of error closes volume implicitelly. return ready 
+func (stor *Storage) openOrCreateVolUnsafe(ctx context.Context, create bool, relpath string, id, maxSize uint64) (*volCtx, error) {
 	var logg *slog.Logger = nil
 	if stor.logger != nil {
 		logg = stor.logger.With("vol", relpath)
@@ -207,37 +372,37 @@ func (stor *Storage) openOrCreateVolUnsafe(ctx context.Context, create bool, rel
 	select {
 	case <-ctx.Done():
 		err := ctx.Err()
-		return 0, err
+		return nil, err
 	case res := <-ch:
 		if res.err != nil {
 			if res.vol != nil {
 				closeCtx, cancel := context.WithTimeout(context.Background(), timeoutVolsClose)
 				defer cancel()
-				res.err = stor.closeVolUnsafe(closeCtx, res.vol)
-				return 0, res.err
+				_ = stor.closeVolUnsafe(closeCtx, res.vol)
+				return nil, res.err
 			}
+			return nil, res.err
 		}
-		stor.vol[res.vol.Header().Id] = res.vol
 		_, sz := res.vol.Size()
-		stor.metricsAddVol(res.vol.Header().Id, sz)
-		return res.vol.Header().Id, nil
+		vol := &volCtx{
+			lock: &sync.RWMutex{},
+			v:    res.vol,
+			wq:   list.New(),
+			off:  sz,
+			buf:  nil, // TODO implement
+		}
+		return vol, nil
 	}
 }
 
 func (stor *Storage) openVolUnsafe(ctx context.Context, relpath string) (uint64, error) {
-	return stor.openOrCreateVolUnsafe(ctx, false, relpath, 0, 0)
-}
-
-func (stor *Storage) openVol(ctx context.Context, relpath string) (uint64, error) {
-	stor.volsMtx.Lock()
-	defer stor.volsMtx.Unlock()
-
-	k, err := stor.openVolUnsafe(ctx, relpath)
+	vol, err := stor.openOrCreateVolUnsafe(ctx, false, relpath, 0, 0)
 	if err != nil {
 		return 0, err
 	}
-	stor.volLock[k] = &sync.RWMutex{}
-	return k, nil
+	stor.vol[vol.v.Header().Id] = vol
+	stor.metricsAddVol(vol.v.Header().Id, vol.off)
+	return vol.v.Header().Id, nil
 }
 
 func (stor *Storage) createVol(ctx context.Context, id, maxSize uint64) (uint64, error) {
@@ -250,17 +415,20 @@ func (stor *Storage) createVol(ctx context.Context, id, maxSize uint64) (uint64,
 
 	relpath := stor.volPath(id)
 
-	k, err := stor.openOrCreateVolUnsafe(ctx, true, relpath, id, maxSize)
-
+	volctx, err := stor.openOrCreateVolUnsafe(ctx, true, relpath, id, maxSize)
 	if err != nil {
 		return 0, err
 	}
-	stor.volLock[k] = &sync.RWMutex{}
-	return k, nil
+
+	stor.vol[id] = volctx
+	return volctx.v.Header().Id, nil
 }
 
 // must be called under write locked stor.volMtx
 func (stor *Storage) closeVolUnsafe(ctx context.Context, vol *volume.Volume) error {
+	if vol == nil {
+		return models.NewErrInvalidParams("close of nil volume.Volume")
+	}
 	ch := make(chan error, 1)
 	close_co := func(vol_ *volume.Volume, ch_ chan error) {
 		err := vol_.Close()
@@ -281,19 +449,34 @@ func (stor *Storage) closeVolUnsafe(ctx context.Context, vol *volume.Volume) err
 	}
 }
 
+// must be called under write locked stor.volMtx
+func (stor *Storage) closeVolCtxUnsafe(ctx context.Context, volctx *volCtx) error {
+	if volctx == nil {
+		return models.NewErrInvalidParams("close of nil volCtx")
+	}
+	volctx.lock.Lock()
+	defer volctx.lock.Unlock()
+	// TODO add buffers flush if any after buffering implementation
+
+	for volctx.wq.Len() != 0 {
+		volctx.notifyNext(os.ErrClosed)
+	}
+	// after async notification writers could delay their closes
+	err := stor.closeVolUnsafe(ctx, volctx.v)
+
+	return err
+}
+
 func (stor *Storage) closeVol(ctx context.Context, volKey uint64) error {
 	stor.volsMtx.Lock()
 	defer stor.volsMtx.Unlock()
-	
-	// TODO add buffers flush if any after buffering implementation
 
-	vol, ok := stor.vol[volKey] 
+	volctx, ok := stor.vol[volKey] 
 	if ok == false {
 		return models.NewErrInvalidParams(fmt.Sprintf("no such volume '%d' for close", volKey))
 	}
-	err := stor.closeVolUnsafe(ctx, vol)
+	err := stor.closeVolCtxUnsafe(ctx, volctx)
 	delete(stor.vol, volKey)
-	delete(stor.volLock, volKey)
 	stor.metricsRemoveVol(volKey)
 	return err
 }
@@ -309,13 +492,11 @@ func (stor *Storage) close(ctx context.Context) error {
 	defer stor.volsMtx.Unlock()
 	var err error = nil
 	for k, vol := range stor.vol {
-		_err := stor.closeVolUnsafe(ctx, vol)
-		if err != nil {
+		_err := stor.closeVolCtxUnsafe(ctx, vol)
+		if err == nil {
 			err = _err
-		} else {
-			delete(stor.vol, k)
-			delete(stor.volLock, k)
 		}
+		delete(stor.vol, k)
 	}
 
 	if stor.logger != nil {
@@ -362,7 +543,7 @@ func (stor *Storage) AddVolume(ctx context.Context, name string, maxSz uint64) (
 }
 
 func (stor *Storage) RemoveVolume(ctx context.Context, volKey uint64) error {
-	path := stor.volPath(volKey)
+	path := fmt.Sprintf("%s%d", volPrefix, volKey)
 	err := stor.closeVol(ctx, volKey)
 	if err != nil {
 		return fmt.Errorf("failed to close volume '%d' for remove: %v", volKey, err)
@@ -379,8 +560,10 @@ func (stor *Storage) ListVolumes(ctx context.Context) ([]models.Volume, error) {
 
 	vols := make([]models.Volume, 0, len(stor.vol))
 	for _, vol := range stor.vol {
-		header := vol.Header()
-		used, _ := vol.Size()
+		vol.lock.RLock()
+		header := vol.v.Header()
+		used, _ := vol.v.Size()
+		vol.lock.RUnlock()
 		vols = append(vols, models.Volume{
 			Path: stor.volPath(header.Id),
 			Space: models.VolumeSpaceUsage{
@@ -396,17 +579,17 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 	stor.volsMtx.RLock()
 	defer stor.volsMtx.RUnlock()
 
-	volLock := stor.volLock[volKey]
-	volLock.RLock()
-	defer volLock.RUnlock()
 	vol, ok := stor.vol[volKey]
 	if !ok {
 		return nil, models.NewErrInvalidParams(fmt.Sprintf("no such volume '%d' for list objects", volKey))
 	}
 
+	vol.lock.RLock()
+	defer vol.lock.RUnlock()
+
 	objs := make([]models.ObjInfo, 0)
 	opts := []needle.WithOption{}
-	if stor.CsOn {
+	if stor.csOn {
 		// add checksum checker for scaner
 		withCs := needle.WithChecksumAlg(crc64.New(crc64.MakeTable(crc64.ISO)))
 		opts = append(opts, withCs)
@@ -419,10 +602,10 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 		opts = append(opts, needle.WithLogger(scanner_logger))
 	}
 	// start with offset to skip superblock
-	opts = append(opts, needle.WithStartOffset(uint64(vol.HeaderEnd())))
+	opts = append(opts, needle.WithStartOffset(uint64(vol.v.HeaderEnd())))
 
 	// actual iterator creation
-	it, err := needle.NewIter(ctx, vol.Reader(), opts...)
+	it, err := needle.NewIter(ctx, vol.v.Reader(), opts...)
 
 	checkErr := func(err error) bool {
 		return err == nil ||
@@ -468,4 +651,296 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 	}
 
 	return objs, nil
+}
+
+func (stor *Storage) Stats(ctx context.Context) models.StorageStats {
+	if stor.logger != nil {
+		stor.logger.Error("Stats() is not implemented yet")
+	}
+	return models.StorageStats{}
+}
+
+func (stor *Storage) CompactVolume(ctx context.Context, fromKey, toKey uint64) error {
+	if stor.logger != nil {
+		stor.logger.Error("CompactVolume() is not implemented yet")
+	}
+	return &models.ErrUnimplemented{}
+}
+
+func (stor *Storage) PutObjectWriter(volKey, objKey, dataSize uint64) (io.WriteCloser, uint64, error) {
+	stor.volsMtx.RLock()
+	defer stor.volsMtx.RUnlock()
+
+	var (
+		vol *volCtx
+		ok  bool
+	)
+	if vol, ok = stor.vol[volKey]; ok == false {
+		return nil, 0, models.NewErrInvalidParams(fmt.Sprintf("No volume with key '%d'", volKey))
+	}
+
+	vol.lock.Lock()
+	defer vol.lock.Unlock()
+
+	maxSz := vol.v.Header().MaxSize
+	sz, _ := vol.v.Size()
+	if maxSz - sz < needle.CalcNeedleSize(dataSize) {
+		return nil, 0, io.EOF
+	}
+	
+	var cs hash.Hash64 = nil
+	if stor.csOn {
+		cs = crc64.New(crc64.MakeTable(crc64.ISO))
+	}
+
+	flags := needle.DefaultFlags
+	needleFd, objSz, err := needle.NewWriter(vol.v.Writer(), objKey, flags, dataSize, cs)
+
+	if err != nil {
+		if stor.logger != nil {
+			stor.logger.Error("failed to create needle writer for PutObjectWriter", "objKey", objKey, 
+			                  "vol", stor.volPath(volKey),"err", err)
+		}
+		return nil, 0, fmt.Errorf("failed to create needle.Writer: %v", err)
+	}
+
+	w := vol.enqueueSelf(objSz)
+	stor.metricsAccountWriter(volKey)
+	var logger *slog.Logger = nil
+	if stor.logger != nil {
+		logger = stor.logger.With("needleWriter", objKey)
+	}
+	return &objWriter{
+		vol: vol,
+		fd: needleFd,
+		w: w,
+		logger: logger,
+		mLat: stor.metricsWriteLatencyObserver(volKey),
+		mSz:  stor.metricsWriteSizeObserver(volKey),
+		mWr:  stor.metricsWriteBytesCounter(volKey),
+		stor: stor,
+	}, vol.off - objSz, nil
+}
+
+type objWriter struct {
+	vol       *volCtx
+	fd        io.WriteCloser
+	notified  bool
+	w         *waiter
+	logger    *slog.Logger
+	mLat      prom.Observer
+	mWr       prom.Counter // bytes written
+	mSz       prom.Gauge
+	stor      *Storage // ugly, need only for prometheus error counter 
+	timeSt    time.Time
+}
+
+func (ow *objWriter) Write(b []byte) (int, error) {
+	// wait when previous queued writes will complete
+	if ow.w != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), timeoutWriteWaiter)
+		defer cancel()
+		err := ow.w.Wait(ctx)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return 0, err
+		}
+		ow.w = nil
+		ow.timeSt = time.Now()
+	}
+	// do we need to lock volctx on every write??? We designed chan list to exclusivelly 
+	// access volume write fd so may be lock here is not neccesary
+	// I assume we need just RLock here to protect self against cuncurrent closes
+	ow.vol.lock.Lock()
+	defer ow.vol.lock.Unlock()
+
+	n, err := ow.fd.Write(b)
+
+	if n != 0 {
+		if ow.mSz != nil {
+			ow.mSz.Add(float64(n))
+		}
+		if ow.mWr != nil {
+			ow.mWr.Add(float64(n))
+		}
+	}
+	if err != nil {
+		if err == io.EOF {
+			if ow.mLat != nil {
+				ow.mLat.Observe(float64(time.Since(ow.timeSt).Milliseconds()))
+			}
+			ow.mLat = nil
+			if ow.notified == false {
+				ow.vol.notifyNext(nil)
+				ow.notified = true
+			}
+			return n, err
+		}
+		if ow.logger != nil {
+			ow.logger.Error("Write", "err", err)
+		}
+		ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, err)
+		if ow.notified == false {
+			ow.vol.notifyNext(err)
+			ow.notified = true
+		}
+		return n, fmt.Errorf("failed to write needle Writer: %v", err)
+	}
+
+	return n, err
+}
+
+func (ow *objWriter) Close() error {
+	ow.vol.lock.Lock()
+	defer ow.vol.lock.Unlock()
+	if ow.mLat != nil {
+		ow.mLat.Observe(float64(time.Since(ow.timeSt).Milliseconds()))
+	}
+	err := ow.fd.Close()
+	if err != nil && ow.logger != nil {
+		ow.logger.Error("Close", "err", err)
+	}
+	if ow.notified == false {
+		ow.vol.notifyNext(err)
+	}
+	ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, err)
+	
+	if err != nil {
+		return fmt.Errorf("failed to close needle Writer: %v", err)
+	}
+
+	if ow.vol.buf != nil {
+		// TODO 
+		// for buffered write should enqueue here to some wq like for write and imediatelly wait
+		// to optimize writes of short objects (like less then a 100Kb) since volume sync for them
+		// is often slower then write due to page cache
+	} else {
+		// for unbuffered writes just sync on every obj write completion
+		err = ow.vol.v.Sync()
+	}
+
+	return err
+}
+
+func (stor *Storage) GetObjectReader(volKey, objKey, off uint64) (io.ReadCloser, error) {
+	stor.volsMtx.RLock()
+	defer stor.volsMtx.RUnlock()
+
+	var (
+		vol *volCtx
+		ok  bool
+	)
+	if vol, ok = stor.vol[volKey]; ok == false {
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("No volume with key '%d'", volKey))
+	}
+
+	// we will not modify anything except volume, but volume is thread safe itself so just lock for read here
+	vol.lock.RLock()
+	defer vol.lock.RUnlock()
+
+	_, curSynced := vol.v.Size()
+	if curSynced < needle.DataShift || curSynced-needle.DataShift < off {
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("cannot read unsynced data after '%d'", curSynced))
+	}
+
+	var cs hash.Hash64 = nil
+	if stor.csOn {
+		cs = crc64.New(crc64.MakeTable(crc64.ISO))
+	}
+
+	timeSt := time.Now()
+	// implicitly read the header
+	needleFd, err := needle.NewReader(vol.v.Reader(), off, cs)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create needle Reader: %v", err)
+	}
+
+	h := needleFd.Header()
+	if h.Key != objKey {
+		if stor.logger != nil {
+			stor.logger.Error("Invalid obj key", "got", objKey, "want", h.Key)
+		}
+		_ = needleFd.Close()
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("obj key mismatch with ondisk value: got '%d' want '%d'", objKey, h.Key))
+	}
+
+	if needle.FlagsDeleted(h.Flags) {
+		if stor.logger != nil {
+			stor.logger.Error("Deleted object", "key", objKey)
+		}
+		_ = needleFd.Close()
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("obj '%d' is markered for deletion", objKey))
+	}
+
+	var logg *slog.Logger = nil
+	if stor.logger != nil {
+		logg = stor.logger.With("needleReader", objKey)
+	}
+	stor.metricsAccountReader(volKey)
+	or := &objReader{
+		vol: vol,
+		fd:  needleFd,
+		logger: logg,
+		objKey: objKey,
+		mLat: stor.metricsReadLatencyObserver(volKey),
+		mRd:  stor.metricsReadBytesCounter(volKey),
+		stor: stor,
+		timeSt: timeSt,
+	}
+
+	return or, nil
+}
+
+type objReader struct {
+	vol       *volCtx
+	fd        io.ReadCloser
+	objKey    uint64  // stored for onflight validation
+	logger    *slog.Logger
+	mLat      prom.Observer
+	mRd       prom.Counter // bytes read
+	stor      *Storage // ugly, need only for prometheus error counter 
+	timeSt    time.Time
+}
+
+func (or *objReader) Read(b []byte) (int, error) {
+	or.vol.lock.RLock()
+	defer or.vol.lock.RUnlock()
+
+	n, err := or.fd.Read(b)
+
+	if n != 0 {
+		if or.mRd != nil {
+			or.mRd.Add(float64(n))
+		}
+	}
+	if err != nil {
+		if err == io.EOF {
+			if or.mLat != nil {
+				or.mLat.Observe(float64(time.Since(or.timeSt).Milliseconds()))
+			}
+			or.mLat = nil
+			return n, err
+		}
+		if or.logger != nil {
+			or.logger.Error("Read", "err", err)
+		}
+		or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
+		return n, fmt.Errorf("failed to read needle Reader: %v", err)
+	}
+
+	return n, err
+}
+
+func (or *objReader) Close() error {
+	or.vol.lock.RLock()
+	defer or.vol.lock.RUnlock()
+	if or.mLat != nil {
+		or.mLat.Observe(float64(time.Since(or.timeSt).Milliseconds()))
+	}
+	err := or.fd.Close()
+	if err != nil && or.logger != nil {
+		or.logger.Error("Close", "err", err)
+	}
+	or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
+	return err
 }

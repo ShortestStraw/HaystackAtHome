@@ -29,6 +29,7 @@ type Volume struct {
 
 type VolumeStat struct {
 	Info             Volume
+	ObjectsCount     uint
 	PendingReads     int
 	RunningReads     int
 	PendingWrites    int
@@ -59,14 +60,17 @@ type StorageStats struct {
 }
 
 type StorageMetrics struct {
-	TotalWrites      *prom.CounterVec // labels: {<volumeKey>}
-	TotalReads       *prom.CounterVec // labels: {<volumeKey>}
+	TotalWrites      *prom.CounterVec // labels: {<volumeKey>} count
+	TotalReads       *prom.CounterVec // labels: {<volumeKey>} count
+
+	TotalReadBytes   *prom.CounterVec // labels: {<volumeKey>} in bytes 
+	TotalWriteBytes  *prom.CounterVec // labels: {<volumeKey>} in bytes 
 
 	ReadErrors       *prom.CounterVec // labels: {<volumeKey>, <error>}
 	WriteErrors      *prom.CounterVec // labels: {<volumeKey>, <error>}
 
-	Latencies        *prom.HistogramVec // labels: {<volumeKey>, [read|write|delete|datasync]}
-	Sizes            *prom.GaugeVec // labels: {<volumeKey>}
+	Latencies        *prom.HistogramVec // labels: {<volumeKey>, [read|write|delete|datasync]} in ms
+	Sizes            *prom.GaugeVec // labels: {<volumeKey>} in bytes
 
 	Compaction       *prom.GaugeVec // 0-1 state; labels: {<volumeKey>, [from|to]}
 }
@@ -106,13 +110,13 @@ type Storage interface {
 	// Moves volume needles from @fromKey volume to @toKey volume, skipping deleted needles.
 	//
 	// TODO returns reference on struct with progress counters (atomics or prom)
-	CompactVolume(ctx context.Context, fromKey, toKey uint64)
+	CompactVolume(ctx context.Context, fromKey, toKey uint64) error
 
 	// PutObjectWriter creates io.WriteCloser to which object data must be written.
 	// You must write exactly dataSize bytes to it, otherwise it neither io.UnexepectedEOF or 
 	// , when io closed, Close() returns ErrValidation
 	//
-	// Second returned value is offset of future needle. It is an ErrValidation to call
+	// Second returned value is offset of this object start in data stream. It is an ErrValidation to call
 	// GetObjectReader or MarkDeleteObject on object, which io was not closed yet.
 	// 
 	// For PutObjectWriter Close should be offloaded 
@@ -132,12 +136,12 @@ type Storage interface {
 	// On errored Close() data is in undefined state and full object write should be retried.
 	// Storage must provide retry mechanism for this case, but user should be ready to do it by himself. 
 	// On successfull Close() data must be fully written, synced and can be read by GetObjectReader.
-	PutObjectWriter(volKey, objKey, dataSize uint64) (*io.WriteCloser, uint64, error)
+	PutObjectWriter(volKey, objKey, dataSize uint64) (io.WriteCloser, uint64, error)
 
 	// GetObjectReader creates io.ReadCloser from which object data can be read
 	// data can be read until io.EOF or until io.Close() called.
-	// User should remember size of the object himself.
-	GetObjectReader(volKey, objKey, off uint64) (*io.ReadCloser, error)
+	// User should remember the size of requested object himself.
+	GetObjectReader(volKey, objKey, off uint64) (io.ReadCloser, error)
 
 	// Mark object as deleted. To actually remove CompactVolume or RemoveVolume must be called on this volume
 	MarkDeleteObject(ctx context.Context, volKey, objKey, off uint64) (error)
