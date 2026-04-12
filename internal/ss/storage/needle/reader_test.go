@@ -1,7 +1,9 @@
 package needle
 
 import (
+	"bytes"
 	"hash/crc64"
+	"io"
 	"os"
 	"testing"
 
@@ -70,11 +72,66 @@ func TestSimpleReader(t *testing.T) {
 
 		// Do not close for reuse
 		if i != len(objs) - 1 { continue }
-		
+
 		// Close test on last iteration
 		err = reader.Close()
 		if s := cmp.Diff(nil, err, cmpopts.EquateErrors()); s != "" {
 			t.Fatalf("close error (-want +got):\n%s", s)
+		}
+	}
+}
+
+// noCloseFile wraps *os.File to prevent needle.Reader.Close from closing the
+// shared file handle, allowing multiple readers to be opened and closed over
+// the same file within a single test.
+type noCloseFile struct{ *os.File }
+func (noCloseFile) Close() error { return nil }
+
+// TestReaderReadAll verifies that io.ReadAll returns exactly DataSize bytes and
+// no more. The existing TestSimpleReader avoids this by pre-allocating a buffer
+// of exactly DataSize and reading in one shot; io.ReadAll calls Read repeatedly,
+// including one final call after all data is consumed, which would overread into
+// the footer / next needle if Read does not return io.EOF at the data boundary.
+func TestReaderReadAll(t *testing.T) {
+	t.Parallel()
+
+	const bufSz = 1024 * 64
+	file_buf := make([]byte, bufSz)
+	cursor := uint64(0)
+	offs := make([]uint64, len(objs))
+	for i, obj := range objs {
+		offs[i] = cursor
+		cursor += wrNeedle(file_buf[cursor:], obj.key, obj.data)
+	}
+
+	path := ".volume.test.reader.readall"
+	os.Remove(path)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	defer os.Remove(path)
+	defer f.Close()
+	f.Write(file_buf)
+
+	for i, obj := range objs {
+		cs := crc64.New(crc64.MakeTable(crc64.ISO))
+		reader, err := NewReader(noCloseFile{f}, offs[i], cs)
+		if s := cmp.Diff(nil, err, cmpopts.EquateErrors()); s != "" {
+			t.Fatalf("obj[%d] NewReader (-want +got):\n%s", i, s)
+		}
+
+		got, err := io.ReadAll(reader)
+		if s := cmp.Diff(nil, err, cmpopts.EquateErrors()); s != "" {
+			t.Errorf("obj[%d] ReadAll (-want +got):\n%s", i, s)
+		}
+
+		if !bytes.Equal(got, obj.data) {
+			t.Errorf("obj[%d]: got %d bytes want %d bytes", i, len(got), len(obj.data))
+		}
+
+		if err := reader.Close(); err != nil {
+			t.Errorf("obj[%d] Close: %v", i, err)
 		}
 	}
 }

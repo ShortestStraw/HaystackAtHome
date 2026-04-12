@@ -5,6 +5,7 @@ import (
 	"hash/crc64"
 	"os"
 	"testing"
+	"io"
 )
 
 func TestSimpleWriter(t *testing.T) {
@@ -23,21 +24,16 @@ func TestSimpleWriter(t *testing.T) {
 			t.Fatalf("failed to make writer: %v", err)
 		}
 		offs = append(offs, sz + offs[len(offs) - 1])
-		to_write := sz
-		for to_write > 0 {
-			written, err := w.Write(obj.data)
-			to_write -= uint64(written)
-			if err != nil {
-				break
-			}
+
+		// Write returns user-data bytes only; io.EOF signals completion.
+		n, err := w.Write(obj.data)
+		if n != len(obj.data) {
+			t.Fatalf("short write: wrote %d want %d", n, len(obj.data))
 		}
-		if to_write != 0 {
-			t.Fatalf("failed to write needle: to_write '%d'", to_write)
-		}
-		// we will not close writer to reuse os.File
-		if err != nil {
+		if err != nil && err != io.EOF {
 			t.Fatalf("failed to write needle: %v", err)
 		}
+		// we will not close writer to reuse os.File
 	}
 
 	stat, err := f.Stat()

@@ -10,13 +10,12 @@ import (
 )
 
 type Writer struct {
-	fd     io.WriteCloser
-	h      *headerOndisk
-	hDone  bool  // setted to true when h was serialized to fd
-	fDone  bool  // setted to true when footer was serilized to fd
+	fd      io.WriteCloser
+	h       *headerOndisk
+	hDone   bool  // set to true when header has been serialized to fd
 	written uint64
 
-	cs     hash.Hash64
+	cs      hash.Hash64
 }
 
 // The caller must enshure that fd have enough space for write
@@ -49,77 +48,68 @@ func NewWriter(fd io.WriteCloser, key, flags, dataSize uint64, cs hash.Hash64) (
 	return w, sz, nil
 }
 
+// Write implements io.Writer. It returns exactly the number of bytes consumed
+// from b (0 <= n <= len(b)) and a non-nil error when n < len(b).
+//
+// Internal framing (header, footer) is flushed transparently and is never
+// counted in the return value. io.EOF is returned alongside the last user-data
+// bytes when all DataSize bytes have been consumed and the footer has been
+// flushed; the caller should treat (n, io.EOF) as a successful completion.
+// Subsequent calls return (0, io.EOF).
 func (w *Writer) Write(b []byte) (int, error) {
-	amendment := 0
+	if w.written >= w.h.DataSize {
+		return 0, io.EOF
+	}
+
+	// Flush header before the first user-data byte.
 	if !w.hDone {
 		buf := bytes.NewBuffer(make([]byte, 0, headerOndiskSize))
 		if err := struc.Pack(buf, w.h); err != nil {
-			return 0, fmt.Errorf("failed to pack header: %v", err)
+			return 0, fmt.Errorf("failed to pack header: %w", err)
 		}
-
-		written, err := io.Copy(w.fd, buf)
-		amendment = int(written)
-		if err != nil {
-			return amendment, fmt.Errorf("failed to serealize header: %v", err)
+		if _, err := io.Copy(w.fd, buf); err != nil {
+			return 0, fmt.Errorf("failed to serialize header: %w", err)
 		}
-		
 		w.hDone = true
 	}
 
-	reader := bytes.NewReader(b)
-	var tee io.Reader
-	if w.cs != nil {
-		tee = io.TeeReader(reader, w.cs)
-	} else {
-		tee = reader
+	// Cap to remaining user-data bytes.
+	remaining := w.h.DataSize - w.written
+	data := b
+	if uint64(len(data)) > remaining {
+		data = b[:remaining]
 	}
 
-	to_write := int64(len(b))
-	_written := int(0)
-	if w.written + uint64(to_write) > w.h.DataSize {
-		to_write = int64(w.h.DataSize) - int64(w.written)
+	n, err := w.fd.Write(data)
+	if n > 0 && w.cs != nil {
+		// Update checksum only for bytes that reached the underlying writer.
+		w.cs.Write(data[:n])
 	}
-	for to_write > 0 {
-		written, err := io.CopyN(w.fd, tee, to_write)
-		w.written += uint64(written)
-		_written += int(written)
-		to_write -= written
-		if err != nil {
-			return _written + amendment, err
-		}
+	w.written += uint64(n)
+	if err != nil {
+		return n, err
 	}
 
+	// All user data written — flush footer.
 	if w.written == w.h.DataSize {
-		if w.fDone {
-			return _written + amendment, io.EOF
-		}
 		csum := uint64(0)
 		if w.cs != nil {
 			csum = w.cs.Sum64()
 		}
-		pad := calcFooterPadding(w.h.DataSize)
-		f := &footerOndisk{
-			Magic: footerMagic,
-			Checksum: csum,
+		f := &footerOndisk{Magic: footerMagic, Checksum: csum}
+		enc := footerOndiskEncoderFrom(f, calcFooterPadding(w.h.DataSize))
+		if err := enc.Pack(w.fd); err != nil {
+			return n, fmt.Errorf("failed to serialize footer: %w", err)
 		}
-
-		enc := footerOndiskEncoderFrom(f, pad)
-		err := error(nil)
-		if err = enc.Pack(w.fd); err == nil {
-			amendment += int(pad) + int(footerOndiskSizeMin)
-			w.fDone = true 
-		}
-		if err != nil {
-			return _written + amendment, fmt.Errorf("failed to sereailze footer: %v", err)
-		}
-		return _written + amendment, io.EOF
+		return n, io.EOF
 	}
-	return _written + amendment, nil
+
+	return n, nil
 }
 
 func (w *Writer) Close() error {
 	if err := w.fd.Close(); err != nil {
-		return fmt.Errorf("failed to close io: %v", err)
+		return fmt.Errorf("failed to close io: %w", err)
 	}
 	return nil
 } 

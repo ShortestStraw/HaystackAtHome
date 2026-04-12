@@ -181,7 +181,7 @@ func MarkDeleted(wr io.WriterAt, oldFlags, off uint64) error {
 	binary.BigEndian.PutUint64(buf, newFlags)
 	_, err := wr.WriteAt(buf, int64(off + flagsShift))
 	if err != nil {
-		return fmt.Errorf("WriteAt error during delete marking: %v", err)
+		return fmt.Errorf("WriteAt error during delete marking: %w", err)
 	}
 	return nil
 }
@@ -258,18 +258,18 @@ func rdNeedle(rd io.ReaderAt, off uint64, cs hash.Hash64) (*Header, []byte, erro
 	
 	reader := io.NewSectionReader(rd, _off, int64(headerOndiskSize))
 	if err := struc.Unpack(reader, &h); err != nil {
-		return nil, nil, fmt.Errorf("failed to Unpack header: %v", err)
+		return nil, nil, fmt.Errorf("failed to Unpack header: %w", err)
 	}
 
 	if err := validateHeader(&h, off); err != nil {
-		return nil, nil, fmt.Errorf("failed to validate header: %v", err)
+		return nil, nil, fmt.Errorf("failed to validate header: %w", err)
 	}
 
 	cs.Reset()
 	savedFlags := h.Flags
 	h.Flags = 0
 	if err := struc.Pack(cs, &h); err != nil {
-		return nil, nil, fmt.Errorf("failed to Pack header to Hash: %v", err)
+		return nil, nil, fmt.Errorf("failed to Pack header to Hash: %w", err)
 	}
 	h.Flags = savedFlags
 
@@ -286,7 +286,7 @@ func rdNeedle(rd io.ReaderAt, off uint64, cs hash.Hash64) (*Header, []byte, erro
 
 	data, err := io.ReadAll(tee)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to ReadAll tee: %v", err)
+		return nil, nil, fmt.Errorf("failed to ReadAll tee: %w", err)
 	}
 	if len(data) != int(h.DataSize) {
 		return nil, nil, fmt.Errorf("data size mismatch: len(data) '%d', want '%d'", len(data), h.DataSize)
@@ -298,11 +298,11 @@ func rdNeedle(rd io.ReaderAt, off uint64, cs hash.Hash64) (*Header, []byte, erro
 
 	f := footerOndisk{}
 	if err := footerOndiskDecoderFrom(&f, pad).Unpack(reader); err != nil {
-		return nil, nil, fmt.Errorf("failed to Unpack footer: %v", err)
+		return nil, nil, fmt.Errorf("failed to Unpack footer: %w", err)
 	}
 
 	if err := validateFooter(&f, uint64(_off), cs.Sum64()); err != nil {
-		return nil, nil, fmt.Errorf("failed to validate footer: %v", err)
+		return nil, nil, fmt.Errorf("failed to validate footer: %w", err)
 	}
 
 	return header, data, nil
