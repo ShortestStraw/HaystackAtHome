@@ -3,6 +3,7 @@
 package volume
 
 import (
+	"HaystackAtHome/internal/ss/models"
 	"fmt"
 	"io"
 	"log/slog"
@@ -157,6 +158,14 @@ func Open(path string, logger *slog.Logger) (*Volume, error) {
 
 // Creates new volume file, filled its header and return new *Volume instance 
 func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) (*Volume, error) {
+	if path == "" || path == "." || path == ".." {
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("invalid path '%s'", path))
+	}
+
+	if maxSize < uint64(headerOndiskSize) {
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("maxSize '%d' is too low, must be at greater then 40", maxSize))
+	}
+
 	flags := os.O_RDWR | os.O_EXCL | os.O_CREATE
 
 	io, err := os.OpenFile(path, flags, 0o644)
