@@ -44,7 +44,7 @@ func NewWriter(fd io.WriteCloser, key, flags, dataSize uint64, cs hash.Hash64) (
 		}
 	}
 
-	sz := calcFooterPadding(dataSize) + headerOndiskSize + footerOndiskSizeMin + w.h.DataSize
+	sz := CalcNeedleSize(dataSize)
 
 	return w, sz, nil
 }
@@ -91,9 +91,8 @@ func (w *Writer) Write(b []byte) (int, error) {
 
 	if w.written == w.h.DataSize {
 		if w.fDone {
-			return 0, io.EOF
+			return _written + amendment, io.EOF
 		}
-		defer func(){ w.fDone = true }()
 		csum := uint64(0)
 		if w.cs != nil {
 			csum = w.cs.Sum64()
@@ -108,8 +107,12 @@ func (w *Writer) Write(b []byte) (int, error) {
 		err := error(nil)
 		if err = enc.Pack(w.fd); err == nil {
 			amendment += int(pad) + int(footerOndiskSizeMin)
+			w.fDone = true 
 		}
-		return _written + amendment, fmt.Errorf("failed to sereailze footer: %v", err)
+		if err != nil {
+			return _written + amendment, fmt.Errorf("failed to sereailze footer: %v", err)
+		}
+		return _written + amendment, io.EOF
 	}
 	return _written + amendment, nil
 }

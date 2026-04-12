@@ -90,12 +90,13 @@ func (r *Reader) Read(b []byte) (int, error) {
 	}
 
 	if r.read == r.h.DataSize && r.fDone == false {
-		defer func(){ r.fDone = true }()
 		r.f = &footerOndisk{}
 		dec := footerOndiskDecoderFrom(r.f, calcFooterPadding(r.h.DataSize))
 		reader := io.NewSectionReader(r.fd, int64(r.off), int64(footerOndiskSizeMax))
 		if err := dec.Unpack(reader); err != nil {
 			return read, fmt.Errorf("failed to decode footer: %v", err)
+		} else {
+			r.fDone = true
 		}
 	}
 
