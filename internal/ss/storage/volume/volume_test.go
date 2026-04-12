@@ -214,15 +214,15 @@ func TestParallelIO(t *testing.T) {
 		defer fd.Close()
 		defer vol.Sync()
 		for i, buf := range bufs {
-			t.Log(i)
+			// t.Log(i)
 			buf_reader := bytes.NewReader(buf)
 			written, err := io.Copy(fd, buf_reader)
 			if err != nil {
-				t.Logf("err = '%s'", err.Error())
+				t.Logf("i = '%d', err = '%s'", i, err.Error())
 				return false
 			}
 			if written != int64(len(buf)) {
-				t.Logf("written = '%d' != '%d'", written, len(buf))
+				t.Logf("i = '%d', written = '%d' != '%d'", i, written, len(buf))
 				return false
 			}
 		}
@@ -246,10 +246,10 @@ func TestParallelIO(t *testing.T) {
 	reader := func (fd models.ReadAtCloser, bufs... []byte) bool {
 		defer fd.Close()
 		for i, buf := range bufs {
-			t.Log(i)
+			// t.Log(i)
 			_, err := fd.ReadAt(buf, int64(i * 1024 * 1024))
 			if err != nil && err != io.EOF {
-				t.Logf("err = '%s'", err.Error())
+				t.Logf("i = '%d', err = '%s'", i, err.Error())
 				return false
 			}
 		}
@@ -272,10 +272,10 @@ func TestParallelIO(t *testing.T) {
 			defer vol.Sync()
 			buf := make([]byte, 1024 * 1024)
 			for i := range 20 {
-				t.Log(i)
+				// t.Log(i)
 				_, err := fd_rewr.WriteAt(buf, int64(i * 1024 * 1024))
 				if err != nil && err != io.EOF {
-					t.Logf("err = '%s'", err.Error())
+					t.Logf("i = '%d', err = '%s'", i, err.Error())
 				}
 			}
 		})

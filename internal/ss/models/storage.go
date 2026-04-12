@@ -60,14 +60,12 @@ type StorageStats struct {
 }
 
 type StorageMetrics struct {
-	TotalWrites      *prom.CounterVec // labels: {<volumeKey>} count
-	TotalReads       *prom.CounterVec // labels: {<volumeKey>} count
+	TotalOps         *prom.CounterVec // labels: {<volumeKey>, [read|write|delete|datasync]} count
 
 	TotalReadBytes   *prom.CounterVec // labels: {<volumeKey>} in bytes 
 	TotalWriteBytes  *prom.CounterVec // labels: {<volumeKey>} in bytes 
 
-	ReadErrors       *prom.CounterVec // labels: {<volumeKey>, <error>}
-	WriteErrors      *prom.CounterVec // labels: {<volumeKey>, <error>}
+	Errors           *prom.CounterVec // labels: {<volumeKey>, [read|write|delete|datasync], <error>}
 
 	Latencies        *prom.HistogramVec // labels: {<volumeKey>, [read|write|delete|datasync]} in ms
 	Sizes            *prom.GaugeVec // labels: {<volumeKey>} in bytes
@@ -96,7 +94,7 @@ type Storage interface {
 	AddVolume(ctx context.Context, name string, maxSz uint64) (uint64, error)
 
 	// Return current Storage state, see StorageStats
-	Stats(ctx context.Context) StorageStats
+	Stats(ctx context.Context) *StorageStats
 
 	// Deletes the whole volume and releasing memory it used
 	RemoveVolume(ctx context.Context, volKey uint64) error

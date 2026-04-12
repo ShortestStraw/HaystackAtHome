@@ -110,9 +110,16 @@ func (vc *volCtx) notifyNext(err error) {
 	TODO lsm .index file for fast start. Maybe it will be better to have own .index for each volume
 	since reading and iterating over index may be paralleled with consequetive maps merge
 
-	TODO fsync\fdatasync latency, count and error accounting. Need to extend models.StorageMetrics
+	TODO write recovery on partial or cancelled writes to volume. BLOCKER
 
-	TODO write recovery on partial or cancelled writes to volume. May be 
+	TODO stats fields
+
+	TODO buffering, after write recovery. With buffers for every volume we will be able:
+		1) call Sync once for many little objects. low prio
+		2) call Sync on timeout
+		3) call Sync after unsynced bypass some threshold
+	This optimization will increase a little latency of writes but may noticeable increase bandwidth.
+	May be too hard to implement with current architecture
 */
 type Storage struct {
 	root       *os.Root
@@ -247,9 +254,36 @@ func (stor *Storage) metricsRemoveVol(volKey uint64) {
 
 func (stor *Storage) metricsAccountWriter(volKey uint64) {
 	if stor.metrics != nil {
-		if stor.metrics.TotalWrites != nil {
-			label := stor.volPath(volKey)
-			stor.metrics.TotalWrites.WithLabelValues(label).Inc()
+		if stor.metrics.TotalOps != nil {
+			volLabel := stor.volPath(volKey)
+			stor.metrics.TotalOps.WithLabelValues(volLabel, "write").Inc()
+		}
+	}
+}
+
+func (stor *Storage) metricsAccountReader(volKey uint64) {
+	if stor.metrics != nil {
+		if stor.metrics.TotalOps != nil {
+			volLabel := stor.volPath(volKey)
+			stor.metrics.TotalOps.WithLabelValues(volLabel, "read").Inc()
+		}
+	}
+}
+
+func (stor *Storage) metricsAccountSync(volKey uint64) {
+	if stor.metrics != nil {
+		if stor.metrics.TotalOps != nil {
+			volLabel := stor.volPath(volKey)
+			stor.metrics.TotalOps.WithLabelValues(volLabel, "sync").Inc()
+		}
+	}
+}
+
+func (stor *Storage) metricsAccountDelete(volKey uint64) {
+	if stor.metrics != nil {
+		if stor.metrics.TotalOps != nil {
+			volLabel := stor.volPath(volKey)
+			stor.metrics.TotalOps.WithLabelValues(volLabel, "delete").Inc()
 		}
 	}
 }
@@ -284,16 +318,6 @@ func (stor *Storage) metricsWriteBytesCounter(volKey uint64) prom.Counter {
 	return nil
 }
 
-func (stor *Storage) metricsAccountReader(volKey uint64) {
-	if stor.metrics != nil {
-		if stor.metrics.TotalReads != nil {
-			label := stor.volPath(volKey)
-			stor.metrics.TotalReads.WithLabelValues(label).Inc()
-		}
-	}
-}
-
-
 func (stor *Storage) metricsReadLatencyObserver(volKey uint64) prom.Observer {
 	if stor.metrics != nil {
 		if stor.metrics.Latencies != nil {
@@ -314,7 +338,27 @@ func (stor *Storage) metricsReadBytesCounter(volKey uint64) prom.Counter {
 	return nil
 }
 
-func (stor *Storage) metricsAccountError(vec *prom.CounterVec, volKey uint64, err error) {
+func (stor *Storage) metricsDeleteLatencyObserver(volKey uint64) prom.Observer {
+	if stor.metrics != nil {
+		if stor.metrics.Latencies != nil {
+			volLabel := stor.volPath(volKey)
+			return stor.metrics.Latencies.WithLabelValues(volLabel, "delete")
+		}
+	}
+	return nil
+}
+
+func (stor *Storage) metricsSyncLatencyObserver(volKey uint64) prom.Observer {
+	if stor.metrics != nil {
+		if stor.metrics.Latencies != nil {
+			volLabel := stor.volPath(volKey)
+			return stor.metrics.Latencies.WithLabelValues(volLabel, "sync")
+		}
+	}
+	return nil
+}
+
+func (stor *Storage) metricsAccountError(vec *prom.CounterVec, volKey uint64, op string, err error) {
 	if vec == nil || err == nil {
 		return
 	}
@@ -325,21 +369,32 @@ func (stor *Storage) metricsAccountError(vec *prom.CounterVec, volKey uint64, er
 	} else {
 		errLabel = fmt.Sprintf("%T", err)
 	}
-	vec.WithLabelValues(volLabel, errLabel).Inc()
+	vec.WithLabelValues(volLabel, op, errLabel).Inc()
 }
 
 func (stor *Storage) metricsAccountWriteError(volKey uint64, err error) {
 	if stor.metrics != nil {
-		stor.metricsAccountError(stor.metrics.WriteErrors, volKey, err)
+		stor.metricsAccountError(stor.metrics.Errors, volKey, "write", err)
 	}
 }
 
 func (stor *Storage) metricsAccountReadError(volKey uint64, err error) {
 	if stor.metrics != nil {
-		stor.metricsAccountError(stor.metrics.ReadErrors, volKey, err)
+		stor.metricsAccountError(stor.metrics.Errors, volKey, "read", err)
 	}
 }
 
+func (stor *Storage) metricsAccountDeleteError(volKey uint64, err error) {
+	if stor.metrics != nil {
+		stor.metricsAccountError(stor.metrics.Errors, volKey, "delete", err)
+	}
+}
+
+func (stor *Storage) metricsAccountSyncError(volKey uint64, err error) {
+	if stor.metrics != nil {
+		stor.metricsAccountError(stor.metrics.Errors, volKey, "sync", err)
+	}
+}
 type open_co_ctx struct{
 	vol  *volume.Volume
 	err  error
@@ -484,12 +539,13 @@ func (stor *Storage) closeVol(ctx context.Context, volKey uint64) error {
 // perform volumes Close, may block for a while. call and wait close on all
 // volumes but return the first occured error
 func (stor *Storage) close(ctx context.Context) error {
+	stor.volsMtx.Lock()
+	defer stor.volsMtx.Unlock()
+
 	if stor.logger != nil {
 		stor.logger.Info("Closing volumes")
 	}
 
-	stor.volsMtx.Lock()
-	defer stor.volsMtx.Unlock()
 	var err error = nil
 	for k, vol := range stor.vol {
 		_err := stor.closeVolCtxUnsafe(ctx, vol)
@@ -653,11 +709,39 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 	return objs, nil
 }
 
-func (stor *Storage) Stats(ctx context.Context) models.StorageStats {
-	if stor.logger != nil {
-		stor.logger.Error("Stats() is not implemented yet")
+func (stor *Storage) Stats(ctx context.Context) *models.StorageStats {
+	ss := &models.StorageStats{}
+	stor.volsMtx.RLock()
+	defer stor.volsMtx.RUnlock()
+
+	for _, vol := range stor.vol {
+		vol.lock.RLock()
+		used, _ := vol.v.Size()
+		ss.Volumes = append(ss.Volumes, models.VolumeStat{
+			Info: models.Volume{
+				Path: stor.volPath(vol.v.Header().Id),
+				Space: models.VolumeSpaceUsage{
+					Used: used,
+					Free: vol.v.Header().MaxSize - used,
+				},
+			},
+			ObjectsCount: 0, // we do not track it
+			PendingReads: 0, // reads are never pending
+			RunningReads: 0, // TODO track
+			PendingWrites: vol.wq.Len(),
+			PendingKiB: int(vol.off - used)/1024,
+		})
+		ss.PendingDeletes += 0 // TODO track
+		ss.PendingReads = 0 // reads are never pending
+		ss.PendingWrites += vol.wq.Len()
+		if stor.buffering == 0 {
+			ss.WriteBufferSzs += int(vol.off - used)/1024 // just report pending writes data size
+		} else {
+			// TODO
+		}
+		vol.lock.RUnlock()
 	}
-	return models.StorageStats{}
+	return ss
 }
 
 func (stor *Storage) CompactVolume(ctx context.Context, fromKey, toKey uint64) error {
@@ -683,8 +767,7 @@ func (stor *Storage) PutObjectWriter(volKey, objKey, dataSize uint64) (io.WriteC
 	defer vol.lock.Unlock()
 
 	maxSz := vol.v.Header().MaxSize
-	sz, _ := vol.v.Size()
-	if maxSz - sz < needle.CalcNeedleSize(dataSize) {
+	if maxSz - vol.off < needle.CalcNeedleSize(dataSize) {
 		return nil, 0, io.EOF
 	}
 	
@@ -815,7 +898,15 @@ func (ow *objWriter) Close() error {
 		// is often slower then write due to page cache
 	} else {
 		// for unbuffered writes just sync on every obj write completion
+		timeSt := time.Now()
 		err = ow.vol.v.Sync()
+		if err != nil {
+			ow.stor.metricsAccountSyncError(ow.vol.v.Header().Id, err)
+		} else {
+			if obs := ow.stor.metricsSyncLatencyObserver(ow.vol.v.Header().Id); obs != nil {
+				obs.Observe(float64(time.Since(timeSt).Milliseconds()))
+			}
+		}
 	}
 
 	return err
@@ -838,7 +929,7 @@ func (stor *Storage) GetObjectReader(volKey, objKey, off uint64) (io.ReadCloser,
 	defer vol.lock.RUnlock()
 
 	_, curSynced := vol.v.Size()
-	if curSynced < needle.DataShift || curSynced-needle.DataShift < off {
+	if curSynced < needle.DataShift || curSynced - needle.DataShift < off {
 		return nil, models.NewErrInvalidParams(fmt.Sprintf("cannot read unsynced data after '%d'", curSynced))
 	}
 
@@ -943,4 +1034,56 @@ func (or *objReader) Close() error {
 	}
 	or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
 	return err
+}
+
+func (stor *Storage) Close(ctx context.Context) error {
+	return stor.close(ctx)
+}
+
+// in current implementation we actually dont need objKey here but it is 
+// needed for storage interface and probably will be used in future
+func (stor *Storage) MarkDeleteObject(ctx context.Context, volKey, objKey, off uint64) error {
+	var (
+		vol  *volCtx
+		ok   bool
+	)
+	stor.volsMtx.RLock()
+	defer stor.volsMtx.RUnlock()
+	if vol, ok = stor.vol[volKey]; ok == false {
+		return models.NewErrInvalidParams(fmt.Sprintf("No volume with key '%d'", volKey))
+	}
+
+	vol.lock.Lock()
+	defer vol.lock.Unlock()
+
+	_, szSynced := vol.v.Size()
+	if szSynced < needle.DataShift || szSynced - needle.DataShift < off {
+		return models.NewErrInvalidParams(fmt.Sprintf("Cannot write unsynced data after '%d'", szSynced))
+	}
+
+	fd := vol.v.Rewriter()
+	flags := needle.DefaultFlags
+
+	timeSt := time.Now()
+	err := needle.MarkDeleted(fd, flags, off)
+	if err != nil {
+		stor.metricsAccountDeleteError(volKey, err)
+		return fmt.Errorf("failed to mark obj as deleted: %v", err)
+	}
+	stor.metricsAccountDelete(volKey)
+	if obs := stor.metricsDeleteLatencyObserver(volKey); obs != nil {
+		obs.Observe(float64(time.Since(timeSt).Milliseconds()))
+	}
+
+	timeSt = time.Now()
+	err = vol.v.Sync()
+	if err != nil {
+		stor.metricsAccountSyncError(volKey, err)
+		return fmt.Errorf("failed to sync delete marker: %v", err)
+	} else {
+		if obs := stor.metricsSyncLatencyObserver(volKey); obs != nil {
+			obs.Observe(float64(time.Since(timeSt).Milliseconds()))
+		}
+	}
+	return nil
 }
