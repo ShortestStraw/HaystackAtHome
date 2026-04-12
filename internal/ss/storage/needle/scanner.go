@@ -36,10 +36,8 @@ type Iter struct {
 	ra struct {
 		bufs        [2][]byte
 		buf         *[]byte  // if nil than ra is turned off
-		toggle      chan struct{} /* on toggle ra and it switch buffers:
-		                             it switches it_buf and ra switches ra_buf.
-		                          */
-		read        uint64
+		toggle      chan struct{} // on toggle ra and it switch buffers:
+		                          // it switches it_buf and ra switches ra_buf.
 		off         uint64
 		err         error
 	}
@@ -212,10 +210,10 @@ func (it *Iter) runRa(ctx context.Context) {
 	if it.ra.buf == nil || len(*it.ra.buf) == 0 {
 		return
 	}
-	
+
 	total := uint64(0)
-	defer func(total uint64) { it.ra.toggle <- struct{}{}; it.ra.read = total }(total)
-	
+	defer func() { it.ra.toggle <- struct{}{} }()
+
 	bufLen := uint64(len(*it.ra.buf))
 
 	for total < bufLen {
@@ -233,12 +231,9 @@ func (it *Iter) runRa(ctx context.Context) {
 			return
 		default:
 		}
-		
+
 		// eliminate EOF when total is not null
-		if err != nil && (total == 0 || !(errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF))) {
-			if total != 0 && errors.Is(err, io.ErrUnexpectedEOF) {
-				err = io.EOF
-			}
+		if err != nil && (total == 0 || (err != io.EOF && err != io.ErrUnexpectedEOF)) {
 			it.ra.err = err
 			return
 		}
@@ -265,10 +260,7 @@ func (it *Iter) fillBuf(ctx context.Context) error {
 		default:
 		}
 		// eliminate EOF when total is not null
-		if err != nil && (total == 0 || !(errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF))) {
-			if total != 0 && errors.Is(err, io.ErrUnexpectedEOF) {
-				err = io.EOF
-			}
+		if err != nil && (total == 0 || (err != io.EOF && err != io.ErrUnexpectedEOF)) {
 			return err
 		}
 		if n == 0 {
@@ -311,16 +303,6 @@ func (it *Iter) getHeaderOndisk(ctx context.Context, h *headerOndisk) (err error
 	return nil
 }
 
-func calcFooterPadding(dataSize uint64) uint64 {
-	needlePureLen := headerOndiskSize + dataSize
-	rem := needlePureLen % needleAlignment
-	pad := needleAlignment - rem
-	if pad == needleAlignment {
-		pad = 0
-	}
-	return pad
-}
-
 func (it *Iter) getFooterOndisk(ctx context.Context,f *footerOndisk, pad uint64) (err error) {
 	// As for header additional buffer is needed if structure is splited between 
 	// two subsequent buffers
@@ -345,7 +327,7 @@ func (it *Iter) getFooterOndisk(ctx context.Context,f *footerOndisk, pad uint64)
 
 	dec := footerOndiskDecoderFrom(f, pad)
 	if err := dec.Unpack(buf); err != nil {
-		return nil
+		return err
 	}
 	return nil
 }

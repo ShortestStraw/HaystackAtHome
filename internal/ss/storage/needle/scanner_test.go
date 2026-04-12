@@ -581,7 +581,9 @@ After add to objs set 40 large objects (several KiBs) the results become much be
 and ra started play it role. For objects ~10 KiB size it gives 30% speed rate on btrfs 
 (warmed pcache, 531G occupied) | nvme0n1 931,5G Samsung SSD 990 PRO 1TB | kernel-6.14.5-100.fc40.x86_64
 so bottleneck is header\footer encoding\decoding when objects are tiny but
-when objs size growed bottleneck is mostly checksumming.
+when objs size growed bottleneck is mostly checksumming. For 1Gb file with RA and checksumming the best result is
+1437.61 MB/s	     43604 ns/it.Next()
+with is pretty good since we can scan volumes in parallel and get much higher throughput.
 
 Also, increasing obj size increases influence of buffer size. The bandwith is higher and alloc count 
 is much smaller.

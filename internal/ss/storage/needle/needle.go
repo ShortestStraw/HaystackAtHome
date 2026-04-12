@@ -19,6 +19,7 @@ import (
 	"hash"
 	"hash/crc64"
 	"io"
+	"unsafe"
 
 	"github.com/lunixbochs/struc"
 )
@@ -39,6 +40,7 @@ const (
 	DataShift = headerOndiskSize // Shift of object data offset relatively to its header offset
 
 	flagsDeleted uint64 = 0x1 << 0
+	DefaultFlags uint64 = 0x0
 )
 
 // Respresent needle ondisk header. see NeedleHeader type
@@ -51,6 +53,10 @@ type headerOndisk struct {
 	Reserved    [2]uint64  `struc:"[2]uint64,big"`
 }
 
+var (
+	flagsShift = uint64(unsafe.Offsetof(headerOndisk{}.Flags))
+)
+
 // Represent needle ondisk trailer
 // pading pads the whole Needle to 8 bytes so 
 // this struct ondisk have variable size.
@@ -61,6 +67,20 @@ type footerOndisk struct {
 	Magic       uint64  `struc:"uint64,big"`  // Neadle footer magic
 	Checksum    uint64  `struc:"uint64,big"`  // Neadle checksum: header (without flags) + data
 	Padding     []byte  `struc:"[]byte,big"`  // Needle padding is 8 bytes in total: header + data + footer
+}
+
+func calcFooterPadding(dataSize uint64) uint64 {
+	needlePureLen := headerOndiskSize + dataSize
+	rem := needlePureLen % needleAlignment
+	pad := needleAlignment - rem
+	if pad == needleAlignment {
+		pad = 0
+	}
+	return pad
+}
+
+func CalcNeedleSize(dataSize uint64) uint64 {
+	return calcFooterPadding(dataSize) + dataSize + headerOndiskSize + footerOndiskSizeMin
 }
 
 type footerOndiskEncoder struct {
@@ -157,7 +177,14 @@ func FlagsDeleted(flags uint64) bool {
 }
 // @off is offset on the beggining of header
 // TODO
-func MarkNeedleDeleted(rd io.ReaderAt, off uint64) error {
+func MarkNeedleDeleted(wr io.WriterAt, oldFlags, off uint64) error {
+	newFlags := oldFlags | flagsDeleted
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, newFlags)
+	_, err := wr.WriteAt(buf, int64(off + flagsShift))
+	if err != nil {
+		return fmt.Errorf("WriteAt error during delete marking: %v", err)
+	}
 	return nil
 }
 

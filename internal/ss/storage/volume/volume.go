@@ -61,7 +61,7 @@ func validateHeader(header *headerOndisk) error {
 		}
 	}
 
-	if header.Version < version1 && header.Version > currentVersion {
+	if header.Version < version1 || header.Version > currentVersion {
 		return &HeaderValidationError{ 
 			msg: fmt.Sprintf("Unsupported header version '%d", header.Version),
 		}
