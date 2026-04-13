@@ -51,12 +51,14 @@ func NewReader(fd models.ReadAtCloser, off uint64, cs hash.Hash64) (*Reader, err
 	reader := r.tee(int(headerOndiskSize))
 
 	if err := struc.Unpack(reader, h); err != nil {
+		_ = fd.Close()
 		return nil, fmt.Errorf("failed to unpack header: %w", err)
 	}
 
 	r.off += headerOndiskSize
 
 	if err := validateHeader(h, off); err != nil {
+		_ = fd.Close()
 		return nil, fmt.Errorf("header validation error: %w", err)
 	}
 
