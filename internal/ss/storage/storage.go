@@ -27,7 +27,7 @@ import (
 const (
 	volPrefix = ".volume."
 	timeoutVolsClose = 30 * time.Second
-	timeoutWriteWaiter = 5 * time.Second
+	timeoutWriteWaiter = 20 * time.Second
 )
 
 type volCtx struct {
@@ -218,7 +218,7 @@ func Open(ctx context.Context, storRoot string, opts... Option) (*Storage, error
 	for _, e := range enrties {
 		if e.Type().IsRegular() && strings.HasPrefix(e.Name(), volPrefix) {
 			// since there cannot be concurrent users of this structure we allowed to call unsafe methods 
-			_, err := stor.openVolUnsafe(ctx, stor.root.Name()+"/"+e.Name())
+			_, err := stor.openVolUnsafe(ctx, stor.root.Name() + "/" + e.Name())
 			if err != nil {
 				if stor.logger != nil {
 					stor.logger.Error("failed to open vol", "path", e.Name(), "err", err)
@@ -826,13 +826,34 @@ type objWriter struct {
 	vol       *volCtx
 	fd        io.WriteCloser
 	notified  bool
+	fdClosed  bool      // fd already closed via auto-close on fatal Write error
 	w         *waiter
 	logger    *slog.Logger
 	mLat      prom.Observer
 	mWr       prom.Counter // bytes written
 	mSz       prom.Gauge
-	stor      *Storage // ugly, need only for prometheus error counter 
+	stor      *Storage // ugly, need only for prometheus error counter
 	timeSt    time.Time
+}
+
+// notifyAndCloseFd handles the write-queue notification and closes the needle
+// writer (releasing the VolumeWriter refcnt).  Idempotent: safe to call from
+// both Write (on fatal error) and Close.
+func (ow *objWriter) notifyAndCloseFd(err error) error {
+	if !ow.notified {
+		ow.vol.notifyNext(err)
+		ow.notified = true
+	}
+	if ow.fdClosed {
+		return nil
+	}
+	ow.fdClosed = true
+	cerr := ow.fd.Close()
+	if cerr != nil && ow.logger != nil {
+		ow.logger.Error("Close", "err", cerr)
+	}
+	ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, cerr)
+	return cerr
 }
 
 func (ow *objWriter) Write(b []byte) (int, error) {
@@ -869,7 +890,7 @@ func (ow *objWriter) Write(b []byte) (int, error) {
 				ow.mLat.Observe(float64(time.Since(ow.timeSt).Milliseconds()))
 			}
 			ow.mLat = nil
-			if ow.notified == false {
+			if !ow.notified {
 				ow.vol.notifyNext(nil)
 				ow.notified = true
 			}
@@ -879,10 +900,10 @@ func (ow *objWriter) Write(b []byte) (int, error) {
 			ow.logger.Error("Write", "err", err)
 		}
 		ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, err)
-		if ow.notified == false {
-			ow.vol.notifyNext(err)
-			ow.notified = true
-		}
+		// Unrecoverable write error: notify the queue and auto-close the
+		// descriptor so the caller is not required to call Close() to avoid
+		// a VolumeWriter leak.
+		_ = ow.notifyAndCloseFd(err)
 		return n, fmt.Errorf("failed to write needle Writer: %w", err)
 	}
 
@@ -895,21 +916,13 @@ func (ow *objWriter) Close() error {
 	if ow.mLat != nil {
 		ow.mLat.Observe(float64(time.Since(ow.timeSt).Milliseconds()))
 	}
-	err := ow.fd.Close()
-	if err != nil && ow.logger != nil {
-		ow.logger.Error("Close", "err", err)
-	}
-	if ow.notified == false {
-		ow.vol.notifyNext(err)
-	}
-	ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, err)
-	
+	err := ow.notifyAndCloseFd(nil)
 	if err != nil {
 		return fmt.Errorf("failed to close needle Writer: %w", err)
 	}
 
 	if ow.vol.buf != nil {
-		// TODO 
+		// TODO
 		// for buffered write should enqueue here to some wq like for write and imediatelly wait
 		// to optimize writes of short objects (like less then a 100Kb) since volume sync for them
 		// is often slower then write due to page cache
@@ -1007,8 +1020,23 @@ type objReader struct {
 	logger    *slog.Logger
 	mLat      prom.Observer
 	mRd       prom.Counter // bytes read
-	stor      *Storage // ugly, need only for prometheus error counter 
+	stor      *Storage // ugly, need only for prometheus error counter
 	timeSt    time.Time
+	closeOnce sync.Once // ensures fd is closed exactly once
+}
+
+// closeFd releases the underlying needle.Reader (and its VolumeReader) exactly
+// once.  Safe to call concurrently from Read and Close.
+func (or *objReader) closeFd() error {
+	var err error
+	or.closeOnce.Do(func() {
+		err = or.fd.Close()
+		if err != nil && or.logger != nil {
+			or.logger.Error("Close", "err", err)
+		}
+		or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
+	})
+	return err
 }
 
 func (or *objReader) Read(b []byte) (int, error) {
@@ -1034,6 +1062,9 @@ func (or *objReader) Read(b []byte) (int, error) {
 			or.logger.Error("Read", "err", err)
 		}
 		or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
+		// Unrecoverable read error: auto-release the VolumeReader so the caller
+		// is not required to call Close() to avoid a descriptor leak.
+		_ = or.closeFd()
 		return n, fmt.Errorf("failed to read needle Reader: %w", err)
 	}
 
@@ -1046,12 +1077,7 @@ func (or *objReader) Close() error {
 	if or.mLat != nil {
 		or.mLat.Observe(float64(time.Since(or.timeSt).Milliseconds()))
 	}
-	err := or.fd.Close()
-	if err != nil && or.logger != nil {
-		or.logger.Error("Close", "err", err)
-	}
-	or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
-	return err
+	return or.closeFd()
 }
 
 func (stor *Storage) Close(ctx context.Context) error {
