@@ -51,13 +51,15 @@ func NewReader(fd models.ReadAtCloser, off uint64, cs hash.Hash64) (*Reader, err
 	reader := r.tee(int(headerOndiskSize))
 
 	if err := struc.Unpack(reader, h); err != nil {
-		return nil, fmt.Errorf("failed to unpack header: %v", err)
+		_ = fd.Close()
+		return nil, fmt.Errorf("failed to unpack header: %w", err)
 	}
 
 	r.off += headerOndiskSize
 
 	if err := validateHeader(h, off); err != nil {
-		return nil, fmt.Errorf("header validation error: %v", err)
+		_ = fd.Close()
+		return nil, fmt.Errorf("header validation error: %w", err)
 	}
 
 	r.h = h
@@ -75,42 +77,54 @@ func (r *Reader) tee(n int) (reader io.Reader) {
 }
 
 func (r *Reader) Read(b []byte) (int, error) {
-	to_read := len(b)
-	reader := r.tee(to_read)
-	read := 0
-	for to_read > 0 {
-		n, err := reader.Read(b[read:])
-		to_read -= n
-		read += n
+	if r.read >= r.h.DataSize {
+		return 0, io.EOF
+	}
+
+	remaining := r.h.DataSize - r.read
+	to_read := min(uint64(len(b)), remaining)
+
+	// Call ReadAt directly to avoid allocating a SectionReader+TeeReader per
+	// call (which would dominate cost when the caller uses small buffers).
+	n, err := r.fd.ReadAt(b[:to_read], int64(r.off))
+	if n > 0 {
+		if r.cs != nil {
+			r.cs.Write(b[:n])
+		}
 		r.read += uint64(n)
 		r.off += uint64(n)
-		if err != nil {
-			return read, err
-		}
+	}
+	if err == io.EOF {
+		// Underlying reader hit its boundary; not an error from our perspective.
+		err = nil
+	}
+	if err != nil {
+		return n, err
 	}
 
-	if r.read == r.h.DataSize && r.fDone == false {
+	if r.read == r.h.DataSize && !r.fDone {
 		r.f = &footerOndisk{}
 		dec := footerOndiskDecoderFrom(r.f, calcFooterPadding(r.h.DataSize))
-		reader := io.NewSectionReader(r.fd, int64(r.off), int64(footerOndiskSizeMax))
-		if err := dec.Unpack(reader); err != nil {
-			return read, fmt.Errorf("failed to decode footer: %v", err)
-		} else {
-			r.fDone = true
+		footerRd := io.NewSectionReader(r.fd, int64(r.off), int64(footerOndiskSizeMax))
+		if err := dec.Unpack(footerRd); err != nil {
+			return n, fmt.Errorf("failed to decode footer: %w", err)
 		}
+		r.fDone = true
+		// Do not return io.EOF alongside data; caller gets (0, io.EOF) on the
+		// next call via the r.read >= r.h.DataSize guard above.
 	}
 
-	return read, nil
+	return n, nil
 }
 
 func (r *Reader) Close() error {
 	if err := r.fd.Close(); err != nil {
-		return fmt.Errorf("failed to close io: %v", err)
+		return fmt.Errorf("failed to close io: %w", err)
 	}
 	if r.cs != nil {
 		if r.f != nil {
 			if err := validateFooter(r.f, r.off, r.cs.Sum64()); err != nil {
-				return fmt.Errorf("footer validation error: %v", err)
+				return fmt.Errorf("footer validation error: %w", err)
 			} else {
 				return nil
 			}

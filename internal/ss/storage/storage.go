@@ -27,7 +27,7 @@ import (
 const (
 	volPrefix = ".volume."
 	timeoutVolsClose = 30 * time.Second
-	timeoutWriteWaiter = 5 * time.Second
+	timeoutWriteWaiter = 20 * time.Second
 )
 
 type volCtx struct {
@@ -72,8 +72,8 @@ func notifyNext(wq *list.List, err error) {
 	}
 
 	e := wq.Back()
-	ch := wq.Remove(e).(chan<- error)
-	ch<- err
+	ch := wq.Remove(e).(chan error)
+	ch <- err
 	close(ch)
 }
 
@@ -165,7 +165,15 @@ func WithVolumeWriteBuffering(bufSize uint64) Option {
 }
 
 func validateOpts(stor *Storage) error {
-	_ = stor
+	if stor.buffering != 0 {
+		return fmt.Errorf("buffering is not implemented yet: %w", &models.ErrUnimplemented{})
+	}
+	if stor.csOn == false {
+		if stor.logger != nil {
+			stor.logger.Warn("storage does not support no disabled checksumming yet, turn it implicitly")
+		}
+		stor.csOn = true
+	}
 	return nil
 }
 
@@ -184,7 +192,7 @@ Open also opens all files as volumes for storing objects which match the prefix 
 func Open(ctx context.Context, storRoot string, opts... Option) (*Storage, error) {
 	root, err := os.OpenRoot(storRoot)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open storage root: %v", err)
+		return nil, fmt.Errorf("failed to open storage root: %w", err)
 	}
 
 	stor := &Storage{
@@ -199,18 +207,18 @@ func Open(ctx context.Context, storRoot string, opts... Option) (*Storage, error
 
 	if err := validateOpts(stor); err != nil {
 		_ = stor.root.Close()
-		return nil, fmt.Errorf("params validation failed: %v", err)
+		return nil, fmt.Errorf("params validation failed: %w", err)
 	}
 
 	enrties, err := fs.ReadDir(stor.root.FS(), ".")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list files in storage root: %v", err)
+		return nil, fmt.Errorf("failed to list files in storage root: %w", err)
 	}
 
 	for _, e := range enrties {
 		if e.Type().IsRegular() && strings.HasPrefix(e.Name(), volPrefix) {
 			// since there cannot be concurrent users of this structure we allowed to call unsafe methods 
-			_, err := stor.openVolUnsafe(ctx, e.Name())
+			_, err := stor.openVolUnsafe(ctx, stor.root.Name() + "/" + e.Name())
 			if err != nil {
 				if stor.logger != nil {
 					stor.logger.Error("failed to open vol", "path", e.Name(), "err", err)
@@ -222,7 +230,7 @@ func Open(ctx context.Context, storRoot string, opts... Option) (*Storage, error
 						stor.logger.Error("failed to close opened vols", "err", err)
 					}
 				}
-				return nil, fmt.Errorf("failed to open vol '%s': %v", e.Name(), err)
+				return nil, fmt.Errorf("failed to open vol '%s': %w", e.Name(), err)
 			}
 		}
 	}
@@ -476,6 +484,7 @@ func (stor *Storage) createVol(ctx context.Context, id, maxSize uint64) (uint64,
 	}
 
 	stor.vol[id] = volctx
+	stor.metricsAddVol(volctx.v.Header().Id, volctx.off)
 	return volctx.v.Header().Id, nil
 }
 
@@ -494,10 +503,10 @@ func (stor *Storage) closeVolUnsafe(ctx context.Context, vol *volume.Volume) err
 	go close_co(vol, ch)
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("vol '%d' close cancelled: %v", vol.Header().Id, ctx.Err())
+		return fmt.Errorf("vol '%d' close cancelled: %w", vol.Header().Id, ctx.Err())
 	case err := <- ch:
 		if err != nil {
-			return fmt.Errorf("failed to close vol '%d': %v", vol.Header().Id, err)
+			return fmt.Errorf("failed to close vol '%d': %w", vol.Header().Id, err)
 		} else {
 			return nil
 		}
@@ -592,7 +601,7 @@ func (stor *Storage) AddVolume(ctx context.Context, name string, maxSz uint64) (
 	volKey, err := stor.createVol(ctx, id, maxSz)
 
 	if err != nil {
-		return 0, fmt.Errorf("failed to create volume '%s': %v", name, err)
+		return 0, fmt.Errorf("failed to create volume '%s': %w", name, err)
 	}
 
 	return volKey, nil
@@ -602,10 +611,10 @@ func (stor *Storage) RemoveVolume(ctx context.Context, volKey uint64) error {
 	path := fmt.Sprintf("%s%d", volPrefix, volKey)
 	err := stor.closeVol(ctx, volKey)
 	if err != nil {
-		return fmt.Errorf("failed to close volume '%d' for remove: %v", volKey, err)
+		return fmt.Errorf("failed to close volume '%d' for remove: %w", volKey, err)
 	}
 	if err := stor.root.Remove(path); err != nil {
-		return fmt.Errorf("failed to remove volume file '%s': %v", path, err)
+		return fmt.Errorf("failed to remove volume file '%s': %w", path, err)
 	}
 	return nil
 }
@@ -661,7 +670,8 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 	opts = append(opts, needle.WithStartOffset(uint64(vol.v.HeaderEnd())))
 
 	// actual iterator creation
-	it, err := needle.NewIter(ctx, vol.v.Reader(), opts...)
+	rd := vol.v.Reader()
+	it, err := needle.NewIter(ctx, rd, opts...)
 
 	checkErr := func(err error) bool {
 		return err == nil ||
@@ -673,7 +683,10 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 		if stor.logger != nil {
 			stor.logger.Error("failed to start needle iter", "vol", stor.volPath(volKey), "err", err)
 		}
-		return nil, fmt.Errorf("failed to list objects in volume '%s': %v", stor.volPath(volKey), err)
+		if err := rd.Close(); err != nil && stor.logger != nil {
+			stor.logger.Error("failed to close volume read fd", "vol", stor.volPath(volKey), "err", err)
+		}
+		return nil, fmt.Errorf("failed to list objects in volume '%s': %w", stor.volPath(volKey), err)
 	}
 
 	for h, err := it.Next(ctx); checkErr(err); h, err = it.Next(ctx) {
@@ -700,10 +713,14 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 		objs = append(objs, obj)
 	}
 
-	err = it.Close()
+	err = it.Close() // always nil in current impl
+	err = rd.Close()
+	if stor.logger != nil {
+		stor.logger.Error("failed to close volume read fd", "vol", stor.volPath(volKey), "err", err)
+	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to close iter over objects in volume '%s': %v", stor.volPath(volKey), err)
+		return nil, fmt.Errorf("failed to close iter over objects in volume '%s': %w", stor.volPath(volKey), err)
 	}
 
 	return objs, nil
@@ -784,7 +801,7 @@ func (stor *Storage) PutObjectWriter(volKey, objKey, dataSize uint64) (io.WriteC
 			stor.logger.Error("failed to create needle writer for PutObjectWriter", "objKey", objKey, 
 			                  "vol", stor.volPath(volKey),"err", err)
 		}
-		return nil, 0, fmt.Errorf("failed to create needle.Writer: %v", err)
+		return nil, 0, fmt.Errorf("failed to create needle.Writer: %w", err)
 	}
 
 	w := vol.enqueueSelf(objSz)
@@ -809,13 +826,34 @@ type objWriter struct {
 	vol       *volCtx
 	fd        io.WriteCloser
 	notified  bool
+	fdClosed  bool      // fd already closed via auto-close on fatal Write error
 	w         *waiter
 	logger    *slog.Logger
 	mLat      prom.Observer
 	mWr       prom.Counter // bytes written
 	mSz       prom.Gauge
-	stor      *Storage // ugly, need only for prometheus error counter 
+	stor      *Storage // ugly, need only for prometheus error counter
 	timeSt    time.Time
+}
+
+// notifyAndCloseFd handles the write-queue notification and closes the needle
+// writer (releasing the VolumeWriter refcnt).  Idempotent: safe to call from
+// both Write (on fatal error) and Close.
+func (ow *objWriter) notifyAndCloseFd(err error) error {
+	if !ow.notified {
+		ow.vol.notifyNext(err)
+		ow.notified = true
+	}
+	if ow.fdClosed {
+		return nil
+	}
+	ow.fdClosed = true
+	cerr := ow.fd.Close()
+	if cerr != nil && ow.logger != nil {
+		ow.logger.Error("Close", "err", cerr)
+	}
+	ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, cerr)
+	return cerr
 }
 
 func (ow *objWriter) Write(b []byte) (int, error) {
@@ -830,11 +868,11 @@ func (ow *objWriter) Write(b []byte) (int, error) {
 		ow.w = nil
 		ow.timeSt = time.Now()
 	}
-	// do we need to lock volctx on every write??? We designed chan list to exclusivelly 
-	// access volume write fd so may be lock here is not neccesary
-	// I assume we need just RLock here to protect self against cuncurrent closes
-	ow.vol.lock.Lock()
-	defer ow.vol.lock.Unlock()
+	// RLock is sufficient here: write ordering is guaranteed by the volume's
+	// internal wrLock and the wait-queue mechanism (enqueueSelf/notifyNext).
+	// We only need to prevent concurrent RemoveVolume/Close which take Lock().
+	ow.vol.lock.RLock()
+	defer ow.vol.lock.RUnlock()
 
 	n, err := ow.fd.Write(b)
 
@@ -852,7 +890,7 @@ func (ow *objWriter) Write(b []byte) (int, error) {
 				ow.mLat.Observe(float64(time.Since(ow.timeSt).Milliseconds()))
 			}
 			ow.mLat = nil
-			if ow.notified == false {
+			if !ow.notified {
 				ow.vol.notifyNext(nil)
 				ow.notified = true
 			}
@@ -862,11 +900,11 @@ func (ow *objWriter) Write(b []byte) (int, error) {
 			ow.logger.Error("Write", "err", err)
 		}
 		ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, err)
-		if ow.notified == false {
-			ow.vol.notifyNext(err)
-			ow.notified = true
-		}
-		return n, fmt.Errorf("failed to write needle Writer: %v", err)
+		// Unrecoverable write error: notify the queue and auto-close the
+		// descriptor so the caller is not required to call Close() to avoid
+		// a VolumeWriter leak.
+		_ = ow.notifyAndCloseFd(err)
+		return n, fmt.Errorf("failed to write needle Writer: %w", err)
 	}
 
 	return n, err
@@ -878,21 +916,13 @@ func (ow *objWriter) Close() error {
 	if ow.mLat != nil {
 		ow.mLat.Observe(float64(time.Since(ow.timeSt).Milliseconds()))
 	}
-	err := ow.fd.Close()
-	if err != nil && ow.logger != nil {
-		ow.logger.Error("Close", "err", err)
-	}
-	if ow.notified == false {
-		ow.vol.notifyNext(err)
-	}
-	ow.stor.metricsAccountWriteError(ow.vol.v.Header().Id, err)
-	
+	err := ow.notifyAndCloseFd(nil)
 	if err != nil {
-		return fmt.Errorf("failed to close needle Writer: %v", err)
+		return fmt.Errorf("failed to close needle Writer: %w", err)
 	}
 
 	if ow.vol.buf != nil {
-		// TODO 
+		// TODO
 		// for buffered write should enqueue here to some wq like for write and imediatelly wait
 		// to optimize writes of short objects (like less then a 100Kb) since volume sync for them
 		// is often slower then write due to page cache
@@ -900,6 +930,7 @@ func (ow *objWriter) Close() error {
 		// for unbuffered writes just sync on every obj write completion
 		timeSt := time.Now()
 		err = ow.vol.v.Sync()
+		ow.stor.metricsAccountSync(ow.vol.v.Header().Id)
 		if err != nil {
 			ow.stor.metricsAccountSyncError(ow.vol.v.Header().Id, err)
 		} else {
@@ -943,7 +974,7 @@ func (stor *Storage) GetObjectReader(volKey, objKey, off uint64) (io.ReadCloser,
 	needleFd, err := needle.NewReader(vol.v.Reader(), off, cs)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to create needle Reader: %v", err)
+		return nil, fmt.Errorf("failed to create needle Reader: %w", err)
 	}
 
 	h := needleFd.Header()
@@ -989,8 +1020,23 @@ type objReader struct {
 	logger    *slog.Logger
 	mLat      prom.Observer
 	mRd       prom.Counter // bytes read
-	stor      *Storage // ugly, need only for prometheus error counter 
+	stor      *Storage // ugly, need only for prometheus error counter
 	timeSt    time.Time
+	closeOnce sync.Once // ensures fd is closed exactly once
+}
+
+// closeFd releases the underlying needle.Reader (and its VolumeReader) exactly
+// once.  Safe to call concurrently from Read and Close.
+func (or *objReader) closeFd() error {
+	var err error
+	or.closeOnce.Do(func() {
+		err = or.fd.Close()
+		if err != nil && or.logger != nil {
+			or.logger.Error("Close", "err", err)
+		}
+		or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
+	})
+	return err
 }
 
 func (or *objReader) Read(b []byte) (int, error) {
@@ -1016,7 +1062,10 @@ func (or *objReader) Read(b []byte) (int, error) {
 			or.logger.Error("Read", "err", err)
 		}
 		or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
-		return n, fmt.Errorf("failed to read needle Reader: %v", err)
+		// Unrecoverable read error: auto-release the VolumeReader so the caller
+		// is not required to call Close() to avoid a descriptor leak.
+		_ = or.closeFd()
+		return n, fmt.Errorf("failed to read needle Reader: %w", err)
 	}
 
 	return n, err
@@ -1028,15 +1077,13 @@ func (or *objReader) Close() error {
 	if or.mLat != nil {
 		or.mLat.Observe(float64(time.Since(or.timeSt).Milliseconds()))
 	}
-	err := or.fd.Close()
-	if err != nil && or.logger != nil {
-		or.logger.Error("Close", "err", err)
-	}
-	or.stor.metricsAccountReadError(or.vol.v.Header().Id, err)
-	return err
+	return or.closeFd()
 }
 
 func (stor *Storage) Close(ctx context.Context) error {
+	if stor == nil {
+		return nil
+	}
 	return stor.close(ctx)
 }
 
@@ -1068,7 +1115,7 @@ func (stor *Storage) MarkDeleteObject(ctx context.Context, volKey, objKey, off u
 	err := needle.MarkDeleted(fd, flags, off)
 	if err != nil {
 		stor.metricsAccountDeleteError(volKey, err)
-		return fmt.Errorf("failed to mark obj as deleted: %v", err)
+		return fmt.Errorf("failed to mark obj as deleted: %w", err)
 	}
 	stor.metricsAccountDelete(volKey)
 	if obs := stor.metricsDeleteLatencyObserver(volKey); obs != nil {
@@ -1077,13 +1124,57 @@ func (stor *Storage) MarkDeleteObject(ctx context.Context, volKey, objKey, off u
 
 	timeSt = time.Now()
 	err = vol.v.Sync()
+	stor.metricsAccountSync(volKey)
 	if err != nil {
 		stor.metricsAccountSyncError(volKey, err)
-		return fmt.Errorf("failed to sync delete marker: %v", err)
+		return fmt.Errorf("failed to sync delete marker: %w", err)
 	} else {
 		if obs := stor.metricsSyncLatencyObserver(volKey); obs != nil {
 			obs.Observe(float64(time.Since(timeSt).Milliseconds()))
 		}
 	}
 	return nil
+}
+
+func NewDefaultStorageMetrics() *models.StorageMetrics {
+	m := &models.StorageMetrics{
+		TotalOps: prom.NewCounterVec(prom.CounterOpts{
+				Subsystem: "storage",
+				Name: "total_ops",
+				Help: "total number of io operations over volumes",
+			}, []string{ "volKey", "io" }),
+		TotalReadBytes: prom.NewCounterVec(prom.CounterOpts{
+				Subsystem: "storage",
+				Name: "read_bytes",
+				Help: "total bytes read from all volumes",
+			}, []string{ "volKey"}),
+		TotalWriteBytes: prom.NewCounterVec(prom.CounterOpts{
+			Subsystem: "storage",
+			Name: "written_bytes",
+			Help: "total bytes written from all volumes",
+		}, []string{ "volKey" }),
+		Errors: prom.NewCounterVec(prom.CounterOpts{
+			Subsystem: "storage",
+			Name: "io_errors",
+			Help: "all errors encountered during read, writes, syncs and deletes",
+		}, []string{ "volKey", "io", "error" }),
+		Sizes: prom.NewGaugeVec(prom.GaugeOpts{
+			Subsystem: "storage",
+			Name: "vol_sizes",
+			Help: "volume sizes current value",
+		}, []string{ "volKey" }),
+		Compaction: prom.NewGaugeVec(prom.GaugeOpts{
+			Subsystem: "storage",
+			Name: "compaction",
+			Help: "0-1 table indexed by <volId> and compation direction (\"from\" and \"to\")",
+		}, []string{ "volKey", "direction" }),
+	}
+	buckets := prom.ExponentialBuckets(0.1, 1.2, 60)
+	m.Latencies = prom.NewHistogramVec(prom.HistogramOpts{
+		Subsystem: "storage",
+		Name: "io_latency",
+		Help: "latencies of read, writes, syncs and deletes, if there was no io errors",
+		Buckets: buckets,
+	}, []string{ "volKey", "io" })
+	return m
 }

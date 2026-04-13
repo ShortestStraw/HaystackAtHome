@@ -6,6 +6,11 @@ import "strconv"
 
 type ErrUnimplemented struct {}
 
+func (e *ErrUnimplemented) Is(target error) bool {
+	_, ok := target.(*ErrUnimplemented)
+	return ok
+}
+
 func (e *ErrUnimplemented) Error() string {
 	return "Unimplememted"
 }

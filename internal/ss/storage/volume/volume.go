@@ -3,6 +3,7 @@
 package volume
 
 import (
+	"HaystackAtHome/internal/ss/models"
 	"fmt"
 	"io"
 	"log/slog"
@@ -148,6 +149,15 @@ func Open(path string, logger *slog.Logger) (*Volume, error) {
 	vol.sync_offset = uint64(stat.Size())
 	vol.last_sync_ms = time.Now()
 
+	// Seek the fd to end-of-file so that Write() appends correctly.
+	// struc.Unpack above consumed only the header bytes, leaving the
+	// OS file position at headerOndiskSize (40), not at stat.Size().
+	// Without this seek every Write would overwrite existing needle data.
+	if _, err = vol.io.Seek(0, 2); err != nil {
+		_ = vol.io.Close()
+		return nil, fmt.Errorf("Failed to seek to end of '%s': %w", path, err)
+	}
+
 	if vol.logger != nil {
 		vol.logger.Info("Volume opened", "header", vol.header)
 	}
@@ -157,6 +167,14 @@ func Open(path string, logger *slog.Logger) (*Volume, error) {
 
 // Creates new volume file, filled its header and return new *Volume instance 
 func CreateAndOpen(path string, id uint64, maxSize uint64, logger *slog.Logger) (*Volume, error) {
+	if path == "" || path == "." || path == ".." {
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("invalid path '%s'", path))
+	}
+
+	if maxSize < uint64(headerOndiskSize) {
+		return nil, models.NewErrInvalidParams(fmt.Sprintf("maxSize '%d' is too low, must be at greater then 40", maxSize))
+	}
+
 	flags := os.O_RDWR | os.O_EXCL | os.O_CREATE
 
 	io, err := os.OpenFile(path, flags, 0o644)

@@ -5,7 +5,7 @@ VERSION_VAR ?= HaystackAtHome/internal/build_info.version
 BIN_DIR ?= $(abspath bin)
 PROGS := gw ss client
 
-.PHONY: version-bump-patch version-bump-minor version-bump-major build clean build-grpc test bench
+.PHONY: version-bump-patch version-bump-minor version-bump-major build clean build-grpc test bench bench-storage bench-scanner
 
 # Helper to ensure the version file exists before bumping
 init-version:
@@ -56,5 +56,10 @@ else
 	go test -timeout 20s -v -cover ./...
 endif
 
-bench:
-	go test -timeout 600s -bench=. -run='^$$' ./internal/ss/storage/needle/
+bench: bench-storage bench-scanner
+
+bench-storage:
+	go test -timeout 24h -bench=BenchmarkStorage -benchtime=4x -run='^$$' -v ./internal/ss/storage/
+
+bench-scanner:
+	go test -timeout 600s -bench=BenchmarkScanner -run='^$$' -v ./internal/ss/storage/needle/
