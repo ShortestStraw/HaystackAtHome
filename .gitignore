@@ -2,4 +2,7 @@
 /internal/transport/gw-ss*
 !/internal/transport/gw-ss.proto
 *.volume.test*
+*.stor.*
+*.test
+internal/ss/storage/testcase/
 CLAUDE.md
