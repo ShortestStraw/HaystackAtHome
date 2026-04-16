@@ -2,64 +2,74 @@ syntax = "proto3";
 package haystack;
 option go_package = "./transport";
 
-import "google/protobuf/empty.proto";
+message GetServiceInfoReq {}
 
-enum Error {
-	Ok = 0; // Success
-	ContextLost = 1; // General retiable error
-	NoSpace = 2; // There is no space for PutObj
-	ObjExist = 3; // Obj update is not allowed by design
-	NotFound = 4; // Obj does not exist
+message StorageSpace {
+	uint64 total = 1;
+	uint64 used = 2;
 }
 
-message GetServiceInfoReq  {
-	google.protobuf.Empty _ = 1;
+message StorageFeatures {
+	bool checksum = 1;
 }
 
 message GetServiceInfoResp {
-	uint64 uid = 1; 
+	uint64 uid = 1;
+	StorageSpace space = 2;
+	StorageFeatures features = 3;
+}
+
+// batch_size is a hint for how many objects to include per stream message.
+// 0 means server default.
+message GetObjsMapReq {
+	uint32 batch_size = 1;
+}
+
+message ObjMapMeta {
+	uint64 key = 1;
+	uint64 size = 2;
+}
+
+message GetObjsMapResp {
+	repeated ObjMapMeta obj = 1;
 }
 
 message PutObjMeta {
-	string filepath = 1;
+	uint64 key = 1;
 	uint64 size = 2;
 }
 
 message PutObjReq {
 	oneof data {
-		PutObjMeta meta = 1; // First batch
-		bytes chunk = 2; // The rest batches. Recomended to be in range 32K-1M
+		PutObjMeta meta = 1; // First message
+		bytes chunk = 2;     // Subsequent messages. Recommended range: 32K–1M
 	}
 }
 
-message PutObjResp {
-	Error err = 1;
-}
+message PutObjResp {}
 
 message GetObjReq {
-	string path = 1;
-	optional uint32 chunk_sz = 2; // requested chunk size 
+	uint64 key = 1;
+	optional uint32 chunk_sz = 2; // Requested chunk size hint
 }
 
 message GetObjResp {
 	oneof data {
-		Error err = 1;
-		uint64 size = 2; // Object size, returned as first batch if obj exist and can be read
-		bytes chunk = 3; // The rest batches. Recomended to be in range 32K-1M
+		uint64 size = 1; // First message: object size in bytes
+		bytes chunk = 2; // Subsequent messages: object data
 	}
 }
 
 message DelObjReq {
-	string path = 1;
+	uint64 key = 1;
 }
 
-message DelObjResp {
-	Error err = 1;
-}
+message DelObjResp {}
 
-/* HaystackAtHome storage server description */
+/* HaystackAtHome storage server */
 service SS {
 	rpc GetServiceInfo(GetServiceInfoReq) returns (GetServiceInfoResp);
+	rpc GetObjsMap(GetObjsMapReq) returns (stream GetObjsMapResp);
 	rpc PutObj(stream PutObjReq) returns (PutObjResp);
 	rpc GetObj(GetObjReq) returns (stream GetObjResp);
 	rpc DelObj(DelObjReq) returns (DelObjResp);
