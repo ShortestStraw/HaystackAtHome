@@ -108,7 +108,7 @@ func (vc *volCtx) notifyNext(err error) {
 	last offset, indexed in .index, to the end and update [object -> volume] mapping.
 
 	TODO lsm .index file for fast start. Maybe it will be better to have own .index for each volume
-	since reading and iterating over index may be paralleled with consequetive maps merge
+	since reading and iterating over index may be paralleled with consequetive maps merge. see sqlite
 
 	TODO write recovery on partial or cancelled writes to volume. BLOCKER
 
