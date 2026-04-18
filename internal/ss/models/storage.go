@@ -23,7 +23,7 @@ type VolumeSpaceUsage struct {
 }
 
 type Volume struct {
-	Path             string  // relative to SS work dir
+	Key              uint64  // volume identification key 
 	Space            VolumeSpaceUsage
 }
 

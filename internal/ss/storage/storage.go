@@ -630,7 +630,7 @@ func (stor *Storage) ListVolumes(ctx context.Context) ([]models.Volume, error) {
 		used, _ := vol.v.Size()
 		vol.lock.RUnlock()
 		vols = append(vols, models.Volume{
-			Path: stor.volPath(header.Id),
+			Key:   header.Id,
 			Space: models.VolumeSpaceUsage{
 				Used: used,
 				Free: header.MaxSize - used,
@@ -736,7 +736,7 @@ func (stor *Storage) Stats(ctx context.Context) *models.StorageStats {
 		used, _ := vol.v.Size()
 		ss.Volumes = append(ss.Volumes, models.VolumeStat{
 			Info: models.Volume{
-				Path: stor.volPath(vol.v.Header().Id),
+				Key: vol.v.Header().Id,
 				Space: models.VolumeSpaceUsage{
 					Used: used,
 					Free: vol.v.Header().MaxSize - used,

@@ -4,7 +4,6 @@ import (
 	"HaystackAtHome/internal/ss/models"
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -105,15 +104,10 @@ func TestOpenExisting(t *testing.T) {
 		t.Fatalf("ListVolumes: got %d volumes, want %d", len(vols), len(storDesc))
 	}
 
-	// build path->volKey map from fixture for lookup
-	pathToVolKey := make(map[string]uint64, len(storDesc))
-	for volKey := range storDesc {
-		path := fixturePath + fmt.Sprintf("/.volume.%d", volKey)
-		pathToVolKey[path] = volKey
-	}
+	// verify returned keys match fixture
 	for _, v := range vols {
-		if _, ok := pathToVolKey[v.Path]; !ok {
-			t.Errorf("unexpected volume path %q", v.Path)
+		if _, ok := storDesc[v.Key]; !ok {
+			t.Errorf("unexpected volume key %d", v.Key)
 		}
 	}
 
@@ -207,7 +201,7 @@ func TestVolumeAPI(t *testing.T) {
 	}
 	want := []models.Volume{
 		{
-			Path: root + "/.volume.123",
+			Key: 123,
 			Space: models.VolumeSpaceUsage{
 				Free: maxSz - 40,
 				Used: 40,
