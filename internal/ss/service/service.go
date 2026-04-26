@@ -114,6 +114,10 @@ func New(ctx context.Context, stor models.Storage, opts ...Option) (*Service, er
 		return nil, err
 	}
 
+	if s.logg != nil {
+		s.logg.Info("start service", "uid", s.uid)
+	}
+
 	return s, nil
 }
 
@@ -220,6 +224,9 @@ func (s *Service) GetObjsMap(ctx context.Context) ([]models.ObjMeta, error) {
 	list := s.objs.List()
 	metas := make([]models.ObjMeta, 0, len(list))
 	for _, oi := range list {
+		if oi.Flags.Deleted {
+			continue
+		}
 		metas = append(metas, models.ObjMeta{
 			Key:  oi.Key,
 			Size: oi.DataSize,
@@ -334,9 +341,15 @@ func (s *Service) DelObj(ctx context.Context, objKey uint64) error {
 }
 
 func (s *Service) Stop(ctx context.Context) error {
-	// Wait for all returned writers to be closed before shutting storage down.
-	s.wg.Wait()
-	return s.stor.Close(ctx)
+	// Drain all in-flight writers before the caller shuts down storage.
+	done := make(chan struct{})
+	go func() { s.wg.Wait(); close(done) }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
 }
 
 func (s *Service) getVolQueue(volKey uint64) *volQueue {

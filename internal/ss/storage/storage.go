@@ -1113,6 +1113,7 @@ func (stor *Storage) MarkDeleteObject(ctx context.Context, volKey, objKey, off u
 
 	timeSt := time.Now()
 	err := needle.MarkDeleted(fd, flags, off)
+	fd.Close()
 	if err != nil {
 		stor.metricsAccountDeleteError(volKey, err)
 		return fmt.Errorf("failed to mark obj as deleted: %w", err)
