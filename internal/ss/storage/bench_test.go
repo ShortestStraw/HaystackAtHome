@@ -731,3 +731,17 @@ func BenchmarkStorage(b *testing.B) {
 		}
 	}
 }
+
+/*
+	vols1 (peak ~175 readMiB/s, ~88 writeMiB/s — single-threaded bottleneck)
+
+  vols5 (~390–450 readMiB/s, ~195–224 writeMiB/s — scales ~2.5× vs vols1)
+
+  vols10 (~660–715 readMiB/s, ~330–360 writeMiB/s — scales ~2× vs vols5)
+
+  vols15 w25r500 (~800 readMiB/s, ~400 writeMiB/s) | vols15 w40r2000 (~640–705, ~320–354) | vols15 w50 (~650–677, ~326–340)
+
+  vols20 w25r500 (~850–908 readMiB/s, ~425–454 writeMiB/s — peak throughput) | vols20 w40r2000 (~797–862, ~399–432) | vols20 w50r5000 (~720–762, ~361–382)
+
+  Peak: vols20_w25_r500_blk512KiB at 908 readMiB/s / 454 writeMiB/s, 4.5 GiB mem. The sweet spot is w25r500/w40r2000 at 20 volumes — more writers start to contend rather than help.
+*/

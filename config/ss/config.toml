@@ -1,0 +1,35 @@
+# log_level: 0=Error  1=Warn  2=Info  3=Debug
+log_level = 2
+
+# log_path: path to log file. Empty string means stdout.
+log_path = "/var/log/haystack/ss.log"
+
+[server]
+# address: host:port for the gRPC listener.
+address = "127.0.0.1:55533"
+
+# prometheus: host:port for /metrics http endpoint. If not specified then metrics are not exported
+prometheus = "127.0.0.1:55555"
+
+[service]
+# vol_num: number of volumes to work with. Can be increase on restart, but must be descrease to prevent data loss
+vol_num = 20
+
+# mem_limit: memory_limit for in memory object mapping table in KiB
+mem_limit = 1048576 # 1024 * 1024 KiBs = 1 GiB
+
+uid = 1234567890
+
+# vol_max_size: maximum size of a single volume file, in bytes.
+# Default: 107374182400 (100 GiB)
+vol_max_size = 107374182400
+
+[storage]
+# root_dir: directory that holds volume files and the index.
+root_dir = "/var/lib/haystack/ss/alpha"
+
+# checksumming: validate CRC64 on reads and compute it on writes.
+checksumming = true
+
+# buffering: buffer writes before syncing (not implemented yet).
+buffering = false

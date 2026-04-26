@@ -108,7 +108,7 @@ func (vc *volCtx) notifyNext(err error) {
 	last offset, indexed in .index, to the end and update [object -> volume] mapping.
 
 	TODO lsm .index file for fast start. Maybe it will be better to have own .index for each volume
-	since reading and iterating over index may be paralleled with consequetive maps merge
+	since reading and iterating over index may be paralleled with consequetive maps merge. see sqlite
 
 	TODO write recovery on partial or cancelled writes to volume. BLOCKER
 
@@ -473,7 +473,7 @@ func (stor *Storage) createVol(ctx context.Context, id, maxSize uint64) (uint64,
 	defer stor.volsMtx.Unlock()
 
 	if _, ok := stor.vol[id]; ok {
-		return 0, models.NewErrInvalidParams(fmt.Sprintf("volume with id '%d' already exists", id))
+		return 0, models.NewErrExists(fmt.Sprintf("volume with id '%d' already exists", id))
 	}
 
 	relpath := stor.volPath(id)
@@ -535,9 +535,9 @@ func (stor *Storage) closeVol(ctx context.Context, volKey uint64) error {
 	stor.volsMtx.Lock()
 	defer stor.volsMtx.Unlock()
 
-	volctx, ok := stor.vol[volKey] 
+	volctx, ok := stor.vol[volKey]
 	if ok == false {
-		return models.NewErrInvalidParams(fmt.Sprintf("no such volume '%d' for close", volKey))
+		return models.NewErrNotFound(fmt.Sprintf("no such volume '%d' for close", volKey))
 	}
 	err := stor.closeVolCtxUnsafe(ctx, volctx)
 	delete(stor.vol, volKey)
@@ -630,7 +630,7 @@ func (stor *Storage) ListVolumes(ctx context.Context) ([]models.Volume, error) {
 		used, _ := vol.v.Size()
 		vol.lock.RUnlock()
 		vols = append(vols, models.Volume{
-			Path: stor.volPath(header.Id),
+			Key:   header.Id,
 			Space: models.VolumeSpaceUsage{
 				Used: used,
 				Free: header.MaxSize - used,
@@ -646,7 +646,7 @@ func (stor *Storage) ListObjects(ctx context.Context, volKey uint64) ([]models.O
 
 	vol, ok := stor.vol[volKey]
 	if !ok {
-		return nil, models.NewErrInvalidParams(fmt.Sprintf("no such volume '%d' for list objects", volKey))
+		return nil, models.NewErrNotFound(fmt.Sprintf("no such volume '%d' for list objects", volKey))
 	}
 
 	vol.lock.RLock()
@@ -736,7 +736,7 @@ func (stor *Storage) Stats(ctx context.Context) *models.StorageStats {
 		used, _ := vol.v.Size()
 		ss.Volumes = append(ss.Volumes, models.VolumeStat{
 			Info: models.Volume{
-				Path: stor.volPath(vol.v.Header().Id),
+				Key: vol.v.Header().Id,
 				Space: models.VolumeSpaceUsage{
 					Used: used,
 					Free: vol.v.Header().MaxSize - used,
@@ -777,7 +777,7 @@ func (stor *Storage) PutObjectWriter(volKey, objKey, dataSize uint64) (io.WriteC
 		ok  bool
 	)
 	if vol, ok = stor.vol[volKey]; ok == false {
-		return nil, 0, models.NewErrInvalidParams(fmt.Sprintf("No volume with key '%d'", volKey))
+		return nil, 0, models.NewErrNotFound(fmt.Sprintf("No volume with key '%d'", volKey))
 	}
 
 	vol.lock.Lock()
@@ -952,7 +952,7 @@ func (stor *Storage) GetObjectReader(volKey, objKey, off uint64) (io.ReadCloser,
 		ok  bool
 	)
 	if vol, ok = stor.vol[volKey]; ok == false {
-		return nil, models.NewErrInvalidParams(fmt.Sprintf("No volume with key '%d'", volKey))
+		return nil, models.NewErrNotFound(fmt.Sprintf("No volume with key '%d'", volKey))
 	}
 
 	// we will not modify anything except volume, but volume is thread safe itself so just lock for read here
@@ -991,7 +991,7 @@ func (stor *Storage) GetObjectReader(volKey, objKey, off uint64) (io.ReadCloser,
 			stor.logger.Error("Deleted object", "key", objKey)
 		}
 		_ = needleFd.Close()
-		return nil, models.NewErrInvalidParams(fmt.Sprintf("obj '%d' is markered for deletion", objKey))
+		return nil, models.NewErrNotFound(fmt.Sprintf("obj '%d' is deleted", objKey))
 	}
 
 	var logg *slog.Logger = nil
@@ -1097,7 +1097,7 @@ func (stor *Storage) MarkDeleteObject(ctx context.Context, volKey, objKey, off u
 	stor.volsMtx.RLock()
 	defer stor.volsMtx.RUnlock()
 	if vol, ok = stor.vol[volKey]; ok == false {
-		return models.NewErrInvalidParams(fmt.Sprintf("No volume with key '%d'", volKey))
+		return models.NewErrNotFound(fmt.Sprintf("No volume with key '%d'", volKey))
 	}
 
 	vol.lock.Lock()
@@ -1113,6 +1113,7 @@ func (stor *Storage) MarkDeleteObject(ctx context.Context, volKey, objKey, off u
 
 	timeSt := time.Now()
 	err := needle.MarkDeleted(fd, flags, off)
+	fd.Close()
 	if err != nil {
 		stor.metricsAccountDeleteError(volKey, err)
 		return fmt.Errorf("failed to mark obj as deleted: %w", err)
