@@ -216,7 +216,7 @@ func TestVolumeAPI(t *testing.T) {
 	defer rmCancel()
 
 	err = stor.RemoveVolume(rmCtx, 5)
-	if diff := cmp.Diff(&models.ErrInvalidParams{}, err, cmpopts.EquateErrors()); diff != "" {
+	if diff := cmp.Diff(&models.ErrNotFound{}, err, cmpopts.EquateErrors()); diff != "" {
 		t.Fatalf("failed to list volumes (-want +got):\n%s", diff)
 	}
 

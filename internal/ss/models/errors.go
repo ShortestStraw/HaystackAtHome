@@ -117,3 +117,54 @@ func (e *ErrObjCSMismatch) Is(targer error) bool {
 func (e *ErrObjCSMismatch) Error() string {
 	return e.msg
 }
+
+type ErrExists struct {
+	msg string
+}
+
+func NewErrExists(msg string) *ErrExists {
+	return &ErrExists{msg: msg}
+}
+
+func (e *ErrExists) Is(target error) bool {
+	_, ok := target.(*ErrExists)
+	return ok
+}
+
+func (e *ErrExists) Error() string {
+	return e.msg
+}
+
+type ErrNotFound struct {
+	msg string
+}
+
+func NewErrNotFound(msg string) *ErrNotFound {
+	return &ErrNotFound{msg: msg}
+}
+
+func (e *ErrNotFound) Is(target error) bool {
+	_, ok := target.(*ErrNotFound)
+	return ok
+}
+
+func (e *ErrNotFound) Error() string {
+	return e.msg
+}
+
+type ErrNoMem struct {
+	msg string
+}
+
+func NewErrNoMem(msg string) *ErrNoMem {
+	return &ErrNoMem{msg: msg}
+}
+
+func (e *ErrNoMem) Is(target error) bool {
+	_, ok := target.(*ErrNoMem)
+	return ok
+}
+
+func (e *ErrNoMem) Error() string {
+	return e.msg
+}
