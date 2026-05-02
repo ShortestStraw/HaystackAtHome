@@ -127,7 +127,7 @@ func GetTask(task *Task, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if size != uint64(len(buf.Bytes())) {
-		slog.Error("GetTask", "Data length mismatch on", path, "%d", key)
+		slog.Error("GetTask", "Data length mismatch on", path, "key", key)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}

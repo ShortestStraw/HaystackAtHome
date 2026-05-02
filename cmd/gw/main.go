@@ -39,7 +39,7 @@ func main() {
 		ll = slog.LevelDebug
 	default:
 		fmt.Printf("Unknown log level")
-		return
+		os.Exit(1)
 	}
 	opts := &slog.HandlerOptions{Level: ll}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, opts))
@@ -49,18 +49,18 @@ func main() {
 	connMap, err := hashring.ConnMapFromConfig(cfg)
 	if err != nil {
 		slog.Error("Starting", "failed to create connection map", err)
-		return
+		os.Exit(1)
 	}
 	ring := hashring.NewMd5Ring(connMap)
 	if ring == nil {
 		slog.Error("Starting failed to create hashring")
-		return
+		os.Exit(1)
 	}
 	slog.Debug("Starting", "Config", cfg.String())
 	serv, ok := cfg.ApiServers[*name]
 	if !ok {
 		slog.Error("Starting", "No such service in configuration", name)
-		return
+		os.Exit(1)
 	}
 	/* Dump service start params */
 	srv := server.New(serv.Endpoint, ring)
