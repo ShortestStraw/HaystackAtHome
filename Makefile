@@ -32,7 +32,7 @@ version-bump-major: init-version
 	echo $$NEW_VERSION > $(VERSION_FILE); \
 	echo "Bumped Major: $(VERSION) -> $$NEW_VERSION"
 
-bin_dir: $(BIN_DIR)
+bin_dir:
 	mkdir -p $(BIN_DIR)
 
 PHASE=0

@@ -1,12 +1,13 @@
 package main
 
 import (
-	"fmt"
-	"HaystackAtHome/internal/api"
 	"HaystackAtHome/internal/build_version"
+	"HaystackAtHome/internal/gw/api"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 )
 
 func main() {
@@ -32,7 +33,8 @@ func main() {
 	slog.SetDefault(logger)
 	slog.Info("Service started", "version", build_version.Get())
 	// 3. Customize the request (optional)
-	req.Header.Add("x-date", "some-date")
+	now := time.Now()
+	req.Header.Add("x-date", now.UTC().Format(time.RFC3339))
 	req.Header.Add("AccessKey", "admin")
 	// You now have a populated *http.Request object 'req'
 	// that you can inspect, pass to other functions, or test.

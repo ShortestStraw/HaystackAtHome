@@ -18,7 +18,7 @@ const (
 var (
 	name       = flag.String("name", "", "Name of the server to search in config")
 	configFile = flag.String("config", "./config.toml", "Path to config file, default ./config.toml")
-	logLevel   = flag.Int("log-level", 2, "0-4: 0 -- minimum, LogErr; 4 -- maximum, Log")
+	logLevel   = flag.Int("log-level", 2, "0-3: 0 -- minimum, LogErr; 3 -- maximum, Log")
 )
 
 func main() {

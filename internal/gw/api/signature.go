@@ -7,6 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
+)
+
+const (
+	AllowedTimeDiff = 15 /* minutes */
 )
 
 /*
@@ -24,6 +29,11 @@ func getCanonicalHeaders(r *http.Request) (string, error) {
 	if len(date) != 1 {
 		return "", ErrBadRequest
 	}
+
+	if !dateValidate(date[0]) {
+		return "", ErrTimeTooSkewed
+	}
+
 	key := r.Header.Values("AccessKey")
 	if len(key) != 1 {
 		return "", ErrBadRequest
@@ -59,4 +69,16 @@ func SignReq(r *http.Request, secret string) (string, error) {
 	h.Write([]byte(canonicalReq))
 	signature := h.Sum(nil)
 	return hex.EncodeToString(signature), nil
+}
+
+func dateValidate(date string) bool {
+	t, err := time.Parse(time.RFC3339, date)
+	if err != nil {
+		return false
+	}
+	now := time.Now()
+	if now.Sub(t).Minutes() < AllowedTimeDiff {
+		return true
+	}
+	return false
 }

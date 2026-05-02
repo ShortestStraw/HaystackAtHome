@@ -1,11 +1,12 @@
 package main
 
 import (
+	"HaystackAtHome/internal/build_version"
+	"HaystackAtHome/internal/gw/config"
+	hashring "HaystackAtHome/internal/gw/hash_ring"
+	"HaystackAtHome/internal/gw/server"
 	"flag"
 	"fmt"
-	"HaystackAtHome/internal/config"
-	"HaystackAtHome/internal/gw/server"
-	"HaystackAtHome/internal/build_version"
 	"log/slog"
 	"os"
 )
@@ -21,7 +22,7 @@ var (
 	name       = flag.String("name", "", "Name of the server to search in config")
 	isSecure   = flag.Bool("secure", false, "Connection uses TLS if true, else plain TCP")
 	configFile = flag.String("config", "./config.toml", "Path to config file, default ./config.toml")
-	logLevel   = flag.Int("log-level", 2, "0-4: 0 -- minimum, LogErr; 4 -- maximum, Log")
+	logLevel   = flag.Int("log-level", 2, "0-3: 0 -- minimum, LogErr; 3 -- maximum, Log")
 )
 
 func main() {
@@ -45,15 +46,23 @@ func main() {
 	slog.SetDefault(logger)
 	slog.Info("GW started", "version", build_version.Get())
 	cfg := config.New(*configFile)
-	ring := config.NewMd5Ring(cfg)
+	connMap, err := hashring.ConnMapFromConfig(cfg)
+	if err != nil {
+		slog.Error("Starting", "failed to create connection map", err)
+		return
+	}
+	ring := hashring.NewMd5Ring(connMap)
+	if ring == nil {
+		slog.Error("Starting failed to create hashring")
+		return
+	}
 	slog.Debug("Starting", "Config", cfg.String())
-	slog.Debug("Starting", "HashRing", ring.String())
-	endpoint, ok := cfg.GetApiByName(*name)
+	serv, ok := cfg.ApiServers[*name]
 	if !ok {
 		slog.Error("Starting", "No such service in configuration", name)
 		return
 	}
 	/* Dump service start params */
-	srv := server.New(endpoint)
+	srv := server.New(serv.Endpoint, ring)
 	srv.RunServer()
 }
