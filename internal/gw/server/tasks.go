@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type TaskType uint8
@@ -78,9 +81,54 @@ func PutTask(task *Task, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// path := parseObjectPath(r.RequestURI)
-	// client := task.Server.hashRing.ChooseServer(path)
-	TestTask(task.Server, w, r)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("PutTask", "Read body error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	defer r.Body.Close()
+
+	path := parseObjectPath(r.RequestURI)
+	key := task.Server.hashRing.GetKey(path)
+	client := task.Server.hashRing.ChooseServer(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.PutObj(ctx)
+	if err != nil {
+		slog.Error("PutTask", "Put object stream error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if err := stream.Send(&transport.PutObjReq{
+		Data: &transport.PutObjReq_Meta{Meta: &transport.PutObjMeta{
+			Key:  uint64(key),
+			Size: uint64(len(body)),
+		}},
+	}); err != nil {
+		slog.Error("PutTask", "Send initial msg error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if err := stream.Send(&transport.PutObjReq{
+		Data: &transport.PutObjReq_Chunk{Chunk: body},
+	}); err != nil {
+		slog.Error("PutTask", "Send data error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := stream.CloseAndRecv(); err != nil {
+		slog.Error("PutTask", "Close stream error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func GetTask(task *Task, w http.ResponseWriter, r *http.Request) {
@@ -103,7 +151,7 @@ func GetTask(task *Task, w http.ResponseWriter, r *http.Request) {
 
 	stream, err := client.GetObj(ctx, &transport.GetObjReq{Key: uint64(key)})
 	if err != nil {
-		/* Handle error properly, for now just response with internal error */
+		slog.Error("GetTask", "Get object stream error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -116,6 +164,24 @@ func GetTask(task *Task, w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
+			st, ok := status.FromError(err)
+			if ok {
+				switch st.Code() {
+				case codes.NotFound:
+					slog.Error("GetTask", "Get object stream error", "Object not found")
+					w.WriteHeader(http.StatusNotFound)
+					return
+				case codes.Unavailable:
+					slog.Error("GetTask", "Get object stream error", "Unavailable")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				default:
+					slog.Error("GetTask", "Get object stream error", st.Message(), "error code", st.Code())
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+			}
+			slog.Error("GetTask", "Get object stream error", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -160,7 +226,7 @@ func (srv *HaystackServer) CreateTask(r *http.Request) (*Task, error) {
 		put key, get key, delete key (simple crud for test)
 	*/
 	taskType := GetTaskType(r)
-	slog.Debug("Create Task", "task type", taskType)
+	slog.Debug("Create Task", "task type", taskType.String())
 	handler, ok := hsHandlers[taskType]
 	if !ok {
 		return nil, ErrNoSuchTask
