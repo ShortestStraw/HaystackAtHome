@@ -1,0 +1,146 @@
+openapi: 3.0.3
+info:
+  title: HaystackAtHome API (MVP)
+  description: >
+    A high-throughput, distributed storage for photos. 
+    Authentication is based on SignatureV2 (HMAC-SHA256).
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local Gateway
+
+components:
+  securitySchemes:
+    SignatureV2:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >
+        Format: "AWS <AccessKey>:<Signature>"
+        Where Signature is HMAC-SHA256(SecretKey, CanonicalString).
+
+  parameters:
+    ObjectKey:
+      name: key
+      in: path
+      required: true
+      description: The unique identifier/path for the object.
+      schema:
+        type: string
+    XDate:
+      name: x-date
+      in: header
+      required: true
+      description: ISO 8601 formatted timestamp.
+      schema:
+        type: string
+        format: date-time
+    AccessKey:
+      name: AccessKey
+      in: header
+      required: true
+      description: Public identifier for the secret key.
+      schema:
+        type: string
+
+security:
+  - S3SignatureV2: []
+
+paths:
+  /{key}:
+    parameters:
+      - $ref: '#/components/parameters/ObjectKey'
+      - $ref: '#/components/parameters/XDate'
+      - $ref: '#/components/parameters/AccessKey'
+
+    get:
+      summary: Retrieve an object
+      operationId: getObject
+      responses:
+        '200':
+          description: Object retrieved successfully
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '403':
+          description: Invalid Signature/Authentication failed
+        '404':
+          description: Object not found
+
+    put:
+      summary: Upload an object
+      operationId: putObject
+      parameters:
+        - name: Content-Type
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: Etag
+          in: header
+          required: true
+          description: MD5 checksum of the payload
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          image/*:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Object stored successfully
+        '400':
+          description: Bad request (Invalid MD5/Etag)
+
+    delete:
+      summary: Delete an object
+      operationId: deleteObject
+      responses:
+        '204':
+          description: Object deleted successfully
+        '404':
+          description: Object not found
+
+  /health:
+    get:
+      summary: Health Check
+      description: Returns the current status of the Gateway or Storage Service.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Service is operational
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: integer
+                    example: 1
+        '503':
+          description: Service is unavailable
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "No SS services available"
+
+  /metrics:
+    get:
+      summary: Prometheus Metrics
+      description: Exposes internal performance metrics (IO stats, cache hits, request latency).
+      operationId: getMetrics
+      security: []
+      responses:
+        '200':
+          description: Text-based Prometheus metrics
+          content:
+            text/plain; version=0.0.4:
+              schema:
+                type: string
