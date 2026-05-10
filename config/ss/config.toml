@@ -32,4 +32,4 @@ root_dir = "/var/lib/haystack/ss/alpha"
 checksumming = true
 
 # buffering: buffer writes before syncing (not implemented yet).
-buffering = false
+buffering = 0

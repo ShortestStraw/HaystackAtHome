@@ -3,6 +3,8 @@ package main
 import (
 	"HaystackAtHome/internal/build_version"
 	"HaystackAtHome/internal/gw/api"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,7 +24,9 @@ func main() {
 
 	// 2. Create the request object
 	// This does NOT send the request yet.
-	req, err := http.NewRequest(method, url, nil)
+	data := map[string]string{"name": "John"}
+	jsonData, _ := json.Marshal(data)
+	req, err := http.NewRequest(method, url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		fmt.Printf("Error creating request: %s\n", err)
 		return
@@ -36,6 +40,11 @@ func main() {
 	now := time.Now()
 	req.Header.Add("x-date", now.UTC().Format(time.RFC3339))
 	req.Header.Add("AccessKey", "admin")
+
+	if method == "PUT" {
+		req.Header.Add("Content-Type", "None")
+		req.Header.Add("Etag", "0")
+	}
 	// You now have a populated *http.Request object 'req'
 	// that you can inspect, pass to other functions, or test.
 	fmt.Printf("Created %s request for: %s\n", req.Method, req.URL)

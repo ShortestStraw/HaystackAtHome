@@ -2,9 +2,12 @@
 [SS]
 [SS.alpha]
 endpoint = "127.0.0.1:55533"
+# cert = "path/to/cert"
+# issecure = true
 
-[SS.beta]
-endpoint = "127.0.0.2:55533"
+
+# [SS.beta]
+# endpoint = "127.0.0.2:55533"
 
 # API gateway endpoints
 [GW]
@@ -12,4 +15,4 @@ endpoint = "127.0.0.2:55533"
 endpoint = "127.0.0.1:8080"
 
 [GW.beta]
-endpoint = "127.0.0.3:8080"
+endpoint = "127.0.0.2:8080"
