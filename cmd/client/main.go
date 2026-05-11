@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -62,6 +63,6 @@ func main() {
 		return
 	}
 	defer resp.Body.Close()
-	fmt.Printf("Status Code: %d\n", resp.StatusCode)
-
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("Status Code: %d %s\n", resp.StatusCode, body)
 }

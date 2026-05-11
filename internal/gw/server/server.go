@@ -3,26 +3,21 @@ package server
 import (
 	"HaystackAtHome/internal/gw/api"
 	hashring "HaystackAtHome/internal/gw/hash_ring"
-	"errors"
+	"context"
 	"log"
 	"log/slog"
 	"net/http"
-)
-
-/* request processing */
-/*	Firstly handle request, and call parse request function,
-	that will create task name from request.
-	After parsing request check, if task have handler
-	if so process it, else answer is method not implemented
-*/
-var (
-	ErrNoSuchTask = errors.New("No such task")
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 type TaskHandler func(t *Task, w http.ResponseWriter, r *http.Request)
 
 type HaystackServer struct {
 	endpoint string
+	httpSrv  *http.Server
 	hashRing *hashring.HashRing
 }
 
@@ -46,16 +41,41 @@ func (srv *HaystackServer) ReqHandler(w http.ResponseWriter, r *http.Request) {
 	task.Handler(task, w, r)
 }
 
-/* TODO: add more endpoints to process */
 func (srv *HaystackServer) RunServer() {
-	http.HandleFunc("/", srv.ReqHandler)
-	log.Fatal(http.ListenAndServe(srv.endpoint, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", srv.ReqHandler)
+	srv.httpSrv = &http.Server{
+		Addr:         srv.endpoint,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	go func() {
+		slog.Info("RunServer", "starting server on", srv.endpoint)
+		if err := srv.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	slog.Info("Running server", "Received signal", sig)
+
+	slog.Info("Running server: starting graceful shutdown...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("HTTP server forced shutdown: %v", err)
+	}
 }
 
 func CheckSignature(task *Task, r *http.Request) error {
 	sign, err := api.SignReq(r, task.SecretKey)
 	if err != nil {
-		slog.Debug("Fail to sign req")
+		slog.Debug("Check signature", "Fail to sign req", err)
 		return err
 	}
 	key := r.Header.Values("Signature")

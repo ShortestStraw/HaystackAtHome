@@ -35,12 +35,12 @@ func newGenericHashRing(conMap *ConnectionMap, hashFunc HashFunction) *HashRing 
 	return ring
 }
 
-func (self *HashRing) ChooseServer(path string) transport.SSClient {
+func (self *HashRing) ChooseServer(key int) transport.SSClient {
 	if len(self.keys) == 0 {
 		return nil
 	}
-	h := self.hashFunc(path)
-	idx := sort.SearchInts(self.keys, h)
+
+	idx := sort.SearchInts(self.keys, key)
 	if idx == len(self.keys) {
 		idx--
 	}
@@ -48,8 +48,11 @@ func (self *HashRing) ChooseServer(path string) transport.SSClient {
 	return self.servers[self.keys[idx]].Client
 }
 
-func (self *HashRing) GetKey(path string) int {
-	return self.hashFunc(path)
+func (self *HashRing) GetServer(idx int) transport.SSClient {
+	if len(self.keys) == 0 || idx < 0 || idx >= len(self.keys) {
+		return nil
+	}
+	return self.servers[self.keys[idx]].Client
 }
 
 func NewMd5Ring(conMap *ConnectionMap) *HashRing {

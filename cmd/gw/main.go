@@ -62,7 +62,6 @@ func main() {
 		slog.Error("Starting", "No such service in configuration", name)
 		os.Exit(1)
 	}
-	/* Dump service start params */
 	srv := server.New(serv.Endpoint, ring)
 	srv.RunServer()
 }
